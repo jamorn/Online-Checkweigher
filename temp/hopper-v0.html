@@ -1,0 +1,491 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Hopper Weigher - Realistic Physics</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body { background-color: #0f172a; }
+        canvas { background: #1e293b; border-radius: 12px; box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.5); }
+        .lcd-display {
+            background: #000;
+            color: #10b981;
+            font-family: 'Courier New', Courier, monospace;
+            text-shadow: 0 0 8px #10b981;
+        }
+        .stats-card {
+            background: rgba(30, 41, 59, 0.7);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+    </style>
+</head>
+<body class="flex flex-col items-center justify-center min-h-screen p-4 text-slate-200">
+
+    <div class="max-w-5xl w-full p-6">
+        <div class="flex justify-between items-end mb-6">
+            <div>
+                <h1 class="text-3xl font-bold text-white">Hopper Scale Automation</h1>
+                <p class="text-slate-400">Target Capacity: 30 Tons/Hr (1,200 Cycles/Hr)</p>
+            </div>
+            <div class="stats-card p-4 rounded-lg text-right">
+                <div class="text-xs uppercase text-slate-500">Total Throughput</div>
+                <div id="totalThroughput" class="text-2xl font-bold text-blue-400">0.00 kg</div>
+            </div>
+        </div>
+        
+        <div class="relative flex flex-col md:flex-row gap-6">
+            <!-- Animation Area -->
+            <div class="relative flex-grow">
+                <canvas id="hopperCanvas" width="600" height="500" class="w-full h-auto"></canvas>
+                
+                <!-- Weighing Indicator -->
+                <div class="absolute top-44 right-6 lcd-display p-4 rounded-lg border-2 border-slate-700 min-w-[180px]">
+                    <div class="flex justify-between text-[10px] mb-1 opacity-70">
+                        <span>NET WEIGHT</span>
+                        <span id="cycleTimer">0.0s</span>
+                    </div>
+                    <div id="weightDisplay" class="text-4xl font-bold tracking-tighter text-right">0.00</div>
+                    <div class="flex justify-between items-center mt-2 border-t border-slate-800 pt-1">
+                        <span class="text-[10px]" id="stageIndicator">STANDBY</span>
+                        <span class="text-[10px]">KG</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Controls & Dashboard -->
+            <div class="w-full md:w-80 flex flex-col gap-4">
+                <div class="stats-card p-4 rounded-xl">
+                    <h3 class="text-sm font-bold mb-4 flex items-center gap-2">
+                        <span class="w-2 h-2 rounded-full bg-green-500 animate-pulse"></span>
+                        LIVE CONTROL
+                    </h3>
+                    <div class="space-y-4">
+                        <button id="toggleBtn" class="w-full py-4 bg-blue-600 hover:bg-blue-500 text-white font-bold rounded-lg transition-all shadow-lg active:scale-95">
+                            START AUTO CYCLE
+                        </button>
+                        <button id="resetBtn" class="w-full py-2 bg-slate-700 hover:bg-slate-600 text-white rounded-lg transition-all">
+                            RESET SYSTEM
+                        </button>
+                        <div class="pt-2 border-t border-slate-800">
+                            <div class="text-xs text-slate-400 mb-2">Physics Settings:</div>
+                            <div class="flex items-center justify-between text-xs">
+                                <span>Gravity:</span>
+                                <span class="text-green-400">9.8 m/s²</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="stats-card p-4 rounded-xl flex-grow">
+                    <h3 class="text-sm font-bold mb-3 text-slate-400">CYCLE PROGRESS</h3>
+                    <div class="space-y-3">
+                        <div id="step1" class="text-xs p-2 rounded border border-slate-700 transition-all">1. COARSE (24.5kg)</div>
+                        <div id="step2" class="text-xs p-2 rounded border border-slate-700 transition-all">2. FINE 1 (24.8kg)</div>
+                        <div id="step3" class="text-xs p-2 rounded border border-slate-700 transition-all">3. FINE 2 (25.0kg)</div>
+                        <div id="step4" class="text-xs p-2 rounded border border-slate-700 transition-all">4. STABILIZE / DISCHARGE</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const TARGET_WEIGHT = 25.00;
+        const COARSE_TARGET = 24.50;
+        const FINE1_TARGET = 24.80;
+        const DISCHARGE_TIME = 1500; 
+        const STABILIZE_TIME = 500; 
+        const WEIGH_BOTTOM_Y = 330;
+        const GRAVITY = 0.3; // จำลอง g = 9.8 m/s²
+        const FRICTION = 0.95; // แรงเสียดทาน
+        const PARTICLE_RADIUS = 3.5;
+        
+        class Particle {
+            constructor(x, y, speedMultiplier) {
+                this.x = x;
+                this.y = y;
+                this.radius = PARTICLE_RADIUS;
+                this.vx = (Math.random() - 0.5) * 4; // เพิ่มการกระจายในแนวนอน
+                this.vy = (2 + Math.random() * 3) * speedMultiplier;
+                this.isLanded = false;
+                this.isExiting = false; // กำลังไหลออกจากถังชั่ง
+                this.originalX = x; // เก็บตำแหน่งเริ่มต้น
+            }
+
+            update(isGateOpen, allParticles) { 
+                if (!this.isLanded && !this.isExiting) { 
+                    // ใช้แรงโน้มถ่วง
+                    this.vy += GRAVITY;
+                    
+                    // เคลื่อนที่
+                    this.x += this.vx;
+                    this.y += this.vy;
+                    
+                    // จำกัดการเคลื่อนที่ในแนวนอนภายในถังชั่ง
+                    const leftBound = 300 - 85 + this.radius;
+                    const rightBound = 300 + 85 - this.radius;
+                    
+                    // ชนขอบถัง
+                    if (this.x < leftBound) {
+                        this.x = leftBound;
+                        this.vx *= -0.6; // ลดความเร็วเมื่อชน
+                    } else if (this.x > rightBound) {
+                        this.x = rightBound;
+                        this.vx *= -0.6;
+                    }
+                    
+                    // หาตำแหน่งที่เม็ดจะตกถึง
+                    let targetY = this.findLandingPosition(allParticles);
+                    
+                    // ถ้าเม็ดตกถึงตำแหน่งที่จะวาง
+                    if (this.y >= targetY) {
+                        this.y = targetY;
+                        this.land();
+                        return true;
+                    }
+                } else if (this.isLanded && isGateOpen) {
+                    // เริ่มไหลออกจากถังชั่ง
+                    this.isLanded = false;
+                    this.isExiting = true;
+                    this.vy = 4 + Math.random() * 2; // ความเร็วในการไหลออก
+                    // ไหลไปทางประตู (ตรงกลาง)
+                    this.vx = (300 - this.x) * 0.02; // แรงดึงเข้าหาประตู
+                } else if (this.isExiting) {
+                    // ไหลออกจากถัง
+                    this.vy += GRAVITY * 0.5;
+                    this.y += this.vy;
+                    this.x += this.vx;
+                    
+                    // ไหลผ่านประตู
+                    if (this.x > 300 - 30 && this.x < 300 + 30) {
+                        this.vx *= 0.98; // ลดความเร็วในแนวนอนเมื่อผ่านประตู
+                    }
+                }
+                return false;
+            }
+            
+            land() {
+                this.isLanded = true;
+                this.vy = 0;
+                this.vx = 0;
+            }
+            
+            findLandingPosition(allParticles) {
+                // พื้นฐานคือพื้นก้นถัง
+                let lowestPossibleY = WEIGH_BOTTOM_Y;
+                
+                // หาเม็ดที่อยู่ด้านล่างที่ใกล้ที่สุด
+                for (let other of allParticles) {
+                    if (other === this || !other.isLanded) continue;
+                    
+                    // ระยะห่าง
+                    const dx = this.x - other.x;
+                    const dy = this.y - other.y;
+                    const distance = Math.sqrt(dx*dx + dy*dy);
+                    
+                    // ถ้าเม็ดนี้อยู่เหนือเม็ดอื่นและอยู่ในระยะที่สามารถวางซ้อนได้
+                    if (dy > 0 && distance < this.radius + other.radius) {
+                        // ตำแหน่งบนเม็ดอื่น
+                        const onTopOfOther = other.y - this.radius - other.radius;
+                        
+                        // ใช้ตำแหน่งที่ต่ำที่สุดที่พบ
+                        if (onTopOfOther < lowestPossibleY) {
+                            lowestPossibleY = onTopOfOther;
+                        }
+                    }
+                }
+                
+                return lowestPossibleY;
+            }
+
+            draw(ctx) {
+                ctx.beginPath();
+                ctx.arc(this.x, this.y, this.radius, 0, Math.PI * 2);
+                
+                // ทำให้เม็ดที่อยู่ล่างกว่ามีสีเข้มกว่า
+                const depth = (this.y - WEIGH_BOTTOM_Y) / 100;
+                const brightness = Math.max(0.5, 1 - depth * 0.4);
+                
+                if (this.isExiting) {
+                    // เม็ดที่กำลังไหลออกจะเป็นสีอ่อนกว่า
+                    ctx.fillStyle = `rgb(200, 210, 255)`;
+                } else {
+                    ctx.fillStyle = `rgb(${129 * brightness}, ${140 * brightness}, ${248 * brightness})`;
+                }
+                
+                ctx.fill();
+                ctx.closePath();
+                
+                // เพิ่มเงาเล็กน้อยให้เม็ดดูเป็น 3D
+                if (!this.isExiting) {
+                    ctx.beginPath();
+                    ctx.arc(this.x - 1, this.y - 1, this.radius * 0.7, 0, Math.PI * 2);
+                    ctx.fillStyle = `rgba(255, 255, 255, 0.1)`;
+                    ctx.fill();
+                }
+            }
+        }
+
+        class Hopper {
+            constructor(x, y, width, height) {
+                this.x = x; this.y = y; this.width = width; this.height = height;
+                this.gateOpen = false;
+            }
+            
+            draw(ctx) {
+                // วาดถัง
+                ctx.strokeStyle = '#64748b';
+                ctx.lineWidth = 3;
+                ctx.beginPath();
+                ctx.moveTo(this.x - this.width/2, this.y);
+                ctx.lineTo(this.x + this.width/2, this.y);
+                ctx.lineTo(this.x + this.width/6, this.y + this.height);
+                ctx.lineTo(this.x - this.width/6, this.y + this.height);
+                ctx.closePath();
+                ctx.stroke();
+                
+                // วาดประตู
+                ctx.strokeStyle = this.gateOpen ? '#10b981' : '#f43f5e';
+                const gateY = this.y + this.height + 2;
+                const gx1 = this.x - this.width/6;
+                const gx2 = this.x + this.width/6;
+                ctx.beginPath();
+                if (this.gateOpen) {
+                    // วาดประตูที่เปิด
+                    ctx.moveTo(gx1, gateY);
+                    ctx.lineTo(gx1 - 15, gateY + 20);
+                    ctx.moveTo(gx2, gateY);
+                    ctx.lineTo(gx2 + 15, gateY + 20);
+                    // วาดช่องเปิด
+                    ctx.setLineDash([5, 5]);
+                    ctx.moveTo(gx1, gateY);
+                    ctx.lineTo(gx2, gateY);
+                    ctx.stroke();
+                    ctx.setLineDash([]);
+                } else {
+                    // วาดประตูที่ปิด
+                    ctx.moveTo(gx1, gateY);
+                    ctx.lineTo(gx2, gateY);
+                    ctx.stroke();
+                }
+            }
+        }
+
+        class WeighingSystem {
+            constructor() {
+                this.canvas = document.getElementById('hopperCanvas');
+                this.ctx = this.canvas.getContext('2d');
+                this.particles = [];
+                this.weight = 0;
+                this.totalWeight = 0;
+                this.isAutoMode = false;
+                this.phase = 'IDLE'; 
+                this.cycleStartTime = 0;
+                this.particlesCounted = 0; // นับเม็ดที่แตะพื้นแล้ว
+                
+                this.weightDisplay = document.getElementById('weightDisplay');
+                this.totalDisplay = document.getElementById('totalThroughput');
+                this.stageDisplay = document.getElementById('stageIndicator');
+                this.timerDisplay = document.getElementById('cycleTimer');
+                
+                this.topHopper = new Hopper(300, 50, 200, 100);
+                this.weighHopper = new Hopper(300, 230, 180, 100);
+                
+                this.initEvents();
+                this.animate();
+            }
+
+            initEvents() {
+                const btn = document.getElementById('toggleBtn');
+                btn.onclick = () => {
+                    this.isAutoMode = !this.isAutoMode;
+                    btn.innerText = this.isAutoMode ? 'STOP AUTO CYCLE' : 'START AUTO CYCLE';
+                    btn.classList.toggle('bg-blue-600');
+                    btn.classList.toggle('bg-red-600');
+                    if (this.isAutoMode && this.phase === 'IDLE') {
+                        this.startNewCycle();
+                    }
+                };
+                document.getElementById('resetBtn').onclick = () => location.reload();
+            }
+
+            startNewCycle() {
+                this.weight = 0;
+                this.particlesCounted = 0;
+                this.cycleStartTime = Date.now();
+                this.weighHopper.gateOpen = false;
+                console.log("เริ่มรอบใหม่");
+                this.nextPhase('COARSE_FEED');
+            }
+
+            nextPhase(p) {
+                this.phase = p;
+                this.updateStepUI();
+                console.log("เปลี่ยนเฟสเป็น:", p);
+                
+                switch(p) {
+                    case 'COARSE_FEED':
+                        this.stageDisplay.innerText = "COARSE";
+                        this.topHopper.gateOpen = true;
+                        break;
+                    case 'FINE_FEED_1':
+                        this.stageDisplay.innerText = "FINE 1";
+                        break;
+                    case 'FINE_FEED_2':
+                        this.stageDisplay.innerText = "FINE 2";
+                        break;
+                    case 'STABILIZING':
+                        this.stageDisplay.innerText = "STABLE";
+                        this.topHopper.gateOpen = false;
+                        setTimeout(() => {
+                            this.nextPhase('DISCHARGING');
+                        }, STABILIZE_TIME);
+                        break;
+                    case 'DISCHARGING':
+                        this.stageDisplay.innerText = "DISCHARGE";
+                        this.weighHopper.gateOpen = true;
+                        this.totalWeight += TARGET_WEIGHT;
+                        this.totalDisplay.innerText = this.totalWeight.toFixed(2) + " kg";
+                        
+                        setTimeout(() => {
+                            // ปิดประตูถังชั่ง
+                            this.weighHopper.gateOpen = false;
+                            
+                            // รอให้เม็ดไหลออกไปหมด
+                            const checkEmpty = () => {
+                                const inHopper = this.particles.filter(p => p.y < 450 && p.y > 200).length;
+                                console.log("เม็ดที่เหลือในถัง:", inHopper);
+                                
+                                if (inHopper === 0) {
+                                    // รีเซ็ตและเริ่มรอบใหม่
+                                    this.particles = [];
+                                    this.weight = 0;
+                                    this.particlesCounted = 0;
+                                    
+                                    if (this.isAutoMode) {
+                                        setTimeout(() => {
+                                            this.startNewCycle();
+                                        }, 500);
+                                    } else {
+                                        this.nextPhase('IDLE');
+                                    }
+                                } else {
+                                    // ยังมีเม็ดเหลืออยู่ ให้ตรวจสอบอีกครั้ง
+                                    setTimeout(checkEmpty, 100);
+                                }
+                            };
+                            
+                            checkEmpty();
+                        }, DISCHARGE_TIME);
+                        break;
+                    case 'IDLE':
+                        this.stageDisplay.innerText = "STANDBY";
+                        this.topHopper.gateOpen = false;
+                        this.weighHopper.gateOpen = false;
+                        break;
+                }
+            }
+
+            updateStepUI() {
+                ['step1', 'step2', 'step3', 'step4'].forEach(id => {
+                    document.getElementById(id).className = "text-xs p-2 rounded border border-slate-700 transition-all";
+                });
+                const activeId = this.phase.includes('COARSE') ? 'step1' : 
+                                 this.phase.includes('FINE_FEED_1') ? 'step2' :
+                                 this.phase.includes('FINE_FEED_2') ? 'step3' : 
+                                 this.phase.includes('IDLE') ? '' : 'step4';
+                if(activeId) document.getElementById(activeId).className = "text-xs p-2 rounded border border-blue-500 bg-blue-500/20 text-blue-300 font-bold";
+            }
+
+            animate() {
+                this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
+                
+                // วาดพื้นหลังถังชั่ง (เพื่อให้เห็นเม็ดพลาสติกชัดเจน)
+                this.ctx.fillStyle = 'rgba(30, 41, 59, 0.3)';
+                this.ctx.fillRect(300 - 90, 230, 180, 100);
+                
+                // วาดถัง
+                this.topHopper.draw(this.ctx);
+                this.weighHopper.draw(this.ctx);
+                
+                // วาดพื้น
+                this.ctx.fillStyle = '#475569';
+                this.ctx.fillRect(100, 480, 400, 4);
+
+                // แสดงเวลาผ่านไป
+                if (this.cycleStartTime > 0 && this.phase !== 'IDLE') {
+                    const elapsed = (Date.now() - this.cycleStartTime) / 1000;
+                    this.timerDisplay.innerText = elapsed.toFixed(1) + "s";
+                }
+
+                // สร้างเม็ดพลาสติกใหม่
+                if (this.topHopper.gateOpen && this.phase.includes('FEED')) {
+                    let rate;
+                    switch(this.phase) {
+                        case 'COARSE_FEED': rate = 8; break;
+                        case 'FINE_FEED_1': rate = 3; break;
+                        case 'FINE_FEED_2': rate = 0.5; break;
+                        default: rate = 0;
+                    }
+                    
+                    if (Math.random() < rate) {
+                        // สร้างเม็ดพลาสติกที่ตำแหน่งสุ่มที่ประตูบน
+                        const spread = 40; // การกระจายตัวในแนวนอน
+                        const x = 300 + (Math.random() - 0.5) * spread;
+                        this.particles.push(new Particle(x, 150, 1.2));
+                    }
+                }
+
+                // อัปเดตและวาดเม็ดพลาสติกทั้งหมด
+                for (let i = this.particles.length - 1; i >= 0; i--) {
+                    let p = this.particles[i];
+                    
+                    // อัปเดตเม็ดพลาสติก
+                    const justLanded = p.update(this.weighHopper.gateOpen, this.particles);
+
+                    // นับน้ำหนักเฉพาะเม็ดที่เพิ่งตกถึงพื้น
+                    if (justLanded && !p.isExiting) {
+                        this.particlesCounted++;
+                        
+                        // คำนวณน้ำหนักตามเฟส
+                        if (this.phase === 'COARSE_FEED') {
+                            this.weight += 0.25;
+                            if (this.weight >= COARSE_TARGET && this.weight < FINE1_TARGET) {
+                                this.nextPhase('FINE_FEED_1');
+                            }
+                        } else if (this.phase === 'FINE_FEED_1') {
+                            this.weight += 0.08;
+                            if (this.weight >= FINE1_TARGET && this.weight < TARGET_WEIGHT) {
+                                this.nextPhase('FINE_FEED_2');
+                            }
+                        } else if (this.phase === 'FINE_FEED_2') {
+                            this.weight += 0.02;
+                            if (this.weight >= TARGET_WEIGHT) {
+                                this.weight = TARGET_WEIGHT;
+                                this.nextPhase('STABILIZING');
+                            }
+                        }
+                    }
+
+                    // ลบเม็ดที่ตกลงไปด้านล่างสุด
+                    if (p.y > 520) {
+                        this.particles.splice(i, 1);
+                    } else {
+                        p.draw(this.ctx);
+                    }
+                }
+
+                // อัปเดตน้ำหนักบนหน้าจอ
+                this.weightDisplay.innerText = this.weight.toFixed(2);
+                
+                // ลูปแอนิเมชัน
+                requestAnimationFrame(() => this.animate());
+            }
+        }
+
+        window.onload = () => new WeighingSystem();
+    </script>
+</body>
+</html>

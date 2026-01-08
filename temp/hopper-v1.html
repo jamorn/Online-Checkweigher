@@ -1,0 +1,811 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Hopper Weigher - Shower Flow Simulation</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body { background-color: #0f172a; }
+        canvas { background: #1e293b; border-radius: 12px; box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.5); }
+        .lcd-display {
+            background: #000;
+            color: #10b981;
+            font-family: 'Courier New', Courier, monospace;
+            text-shadow: 0 0 8px #10b981;
+        }
+        .stats-card {
+            background: rgba(30, 41, 59, 0.7);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+        .water-flow {
+            position: absolute;
+            top: 150px;
+            left: 50%;
+            transform: translateX(-50%);
+            width: 120px;
+            height: 80px;
+            background: linear-gradient(to bottom, rgba(129, 140, 248, 0.2), transparent);
+            border-radius: 0 0 60px 60px;
+            pointer-events: none;
+        }
+    </style>
+</head>
+<body class="flex flex-col items-center justify-center min-h-screen p-4 text-slate-200">
+
+    <div class="max-w-5xl w-full p-6">
+        <div class="flex justify-between items-end mb-6">
+            <div>
+                <h1 class="text-3xl font-bold text-white">Hopper Scale Automation - Shower Flow</h1>
+                <p class="text-slate-400">Target Capacity: 30 Tons/Hr | Continuous Shower Flow Mode</p>
+            </div>
+            <div class="stats-card p-4 rounded-lg text-right">
+                <div class="text-xs uppercase text-slate-500">Total Throughput</div>
+                <div id="totalThroughput" class="text-2xl font-bold text-blue-400">0.00 kg</div>
+            </div>
+        </div>
+        
+        <div class="relative flex flex-col md:flex-row gap-6">
+            <!-- Animation Area -->
+            <div class="relative flex-grow">
+                <canvas id="hopperCanvas" width="600" height="500" class="w-full h-auto"></canvas>
+                <div id="waterFlow" class="water-flow opacity-0 transition-opacity duration-300"></div>
+                
+                <!-- Weighing Indicator -->
+                <div class="absolute top-44 right-6 lcd-display p-4 rounded-lg border-2 border-slate-700 min-w-[180px]">
+                    <div class="flex justify-between text-[10px] mb-1 opacity-70">
+                        <span>NET WEIGHT</span>
+                        <span id="cycleTimer">0.0s</span>
+                    </div>
+                    <div id="weightDisplay" class="text-4xl font-bold tracking-tighter text-right">0.00</div>
+                    <div class="flex justify-between items-center mt-2 border-t border-slate-800 pt-1">
+                        <span class="text-[10px]" id="stageIndicator">STANDBY</span>
+                        <span class="text-[10px]">KG</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Controls & Dashboard -->
+            <div class="w-full md:w-80 flex flex-col gap-4">
+                <div class="stats-card p-4 rounded-xl">
+                    <h3 class="text-sm font-bold mb-4 flex items-center gap-2">
+                        <span class="w-2 h-2 rounded-full bg-green-500 animate-pulse"></span>
+                        CONTINUOUS FLOW CONTROL
+                    </h3>
+                    <div class="space-y-4">
+                        <button id="toggleBtn" class="w-full py-4 bg-blue-600 hover:bg-blue-500 text-white font-bold rounded-lg transition-all shadow-lg active:scale-95">
+                            START SHOWER FLOW
+                        </button>
+                        <div class="grid grid-cols-2 gap-2">
+                            <button id="coarseBtn" class="py-2 bg-slate-700 hover:bg-slate-600 rounded-lg transition-all text-xs">
+                                COARSE FLOW
+                            </button>
+                            <button id="fineBtn" class="py-2 bg-slate-700 hover:bg-slate-600 rounded-lg transition-all text-xs">
+                                FINE FLOW
+                            </button>
+                        </div>
+                        <button id="resetBtn" class="w-full py-2 bg-slate-700 hover:bg-slate-600 text-white rounded-lg transition-all">
+                            RESET SYSTEM
+                        </button>
+                    </div>
+                </div>
+
+                <div class="stats-card p-4 rounded-xl flex-grow">
+                    <h3 class="text-sm font-bold mb-3 text-slate-400">FLOW SETTINGS</h3>
+                    <div class="space-y-4">
+                        <div>
+                            <div class="flex justify-between text-xs mb-1">
+                                <span>Flow Rate</span>
+                                <span id="flowRate" class="text-green-400">Medium</span>
+                            </div>
+                            <input type="range" id="flowSlider" min="1" max="100" value="50" class="w-full h-2 bg-slate-700 rounded-lg appearance-none cursor-pointer">
+                        </div>
+                        <div>
+                            <div class="flex justify-between text-xs mb-1">
+                                <span>Spread Width</span>
+                                <span id="spreadWidth" class="text-green-400">Normal</span>
+                            </div>
+                            <input type="range" id="spreadSlider" min="10" max="200" value="80" class="w-full h-2 bg-slate-700 rounded-lg appearance-none cursor-pointer">
+                        </div>
+                        <div class="pt-2 border-t border-slate-800">
+                            <div class="text-xs text-slate-400 mb-2">Flow Stats:</div>
+                            <div class="flex justify-between text-xs">
+                                <span>Particles/sec:</span>
+                                <span id="particleRate" class="text-blue-300">0</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const TARGET_WEIGHT = 25.00;
+        const COARSE_TARGET = 24.50;
+        const FINE1_TARGET = 24.80;
+        const DISCHARGE_TIME = 1200; 
+        const STABILIZE_TIME = 400; 
+        const GRAVITY = 0.4;
+        const PARTICLE_RADIUS = 2.5;
+        
+        // ขอบเขตถังชั่ง
+        const WEIGH_HOPPER = {
+            left: 210,
+            right: 390,
+            top: 230,
+            bottom: 330,
+            width: 180,
+            height: 100
+        };
+        
+        class ShowerParticle {
+            constructor(x, y, vx, vy, size) {
+                this.x = x;
+                this.y = y;
+                this.radius = size;
+                this.vx = vx;
+                this.vy = vy;
+                this.isLanded = false;
+                this.isExiting = false;
+                this.inHopper = false;
+                this.lifetime = 0;
+                this.maxLifetime = 5000; // 5 seconds max
+                this.wobble = Math.random() * Math.PI * 2;
+                this.wobbleSpeed = 0.5 + Math.random() * 1;
+            }
+
+            update(system, isGateOpen, deltaTime) {
+                this.lifetime += deltaTime;
+                
+                // ถ้าอายุเกินหรือกำลังออกจากระบบ
+                if (this.lifetime > this.maxLifetime || this.isExiting) {
+                    return this.updateExiting(deltaTime);
+                }
+                
+                // ถ้ายังไม่ตกถึง
+                if (!this.isLanded) {
+                    return this.updateFalling(system, deltaTime);
+                }
+                
+                // ถ้าตกถึงแล้ว
+                return this.updateInHopper(system, isGateOpen, deltaTime);
+            }
+            
+            updateFalling(system, deltaTime) {
+                // แรงโน้มถ่วง
+                this.vy += GRAVITY;
+                
+                // การสั่นแบบน้ำ (wobble effect)
+                this.wobble += this.wobbleSpeed * deltaTime * 0.01;
+                this.vx += Math.sin(this.wobble) * 0.05;
+                
+                // เคลื่อนที่
+                this.x += this.vx * deltaTime * 0.1;
+                this.y += this.vy * deltaTime * 0.1;
+                
+                // ตรวจสอบว่าเข้าถังชั่งหรือยัง
+                if (this.y > WEIGH_HOPPER.top && 
+                    this.x > WEIGH_HOPPER.left && 
+                    this.x < WEIGH_HOPPER.right) {
+                    this.inHopper = true;
+                }
+                
+                // ตรวจสอบการชนกับขอบถัง
+                this.checkWallCollision();
+                
+                // หาตำแหน่งพื้นผิวจากระบบ (heightmap)
+                const surfaceY = system.getSurfaceY(this.x);
+                
+                // ถ้าตกถึงพื้นผิว
+                if (this.y >= surfaceY - this.radius) {
+                    this.y = surfaceY - this.radius;
+                    
+                    // เอฟเฟกต์น้ำกระเซ็น
+                    if (Math.abs(this.vy) > 2) {
+                        this.vx += (Math.random() - 0.5) * this.vy * 0.3;
+                    }
+                    
+                    this.vy = Math.max(0, this.vy * 0.3);
+                    
+                    // ถ้าความเร็วต่ำมาก ให้ถือว่าตกถึงแล้ว
+                    if (Math.abs(this.vy) < 0.5) {
+                        this.isLanded = true;
+                        this.vx = 0;
+                        this.vy = 0;
+                        // บันทึก bucket index และอัปเดต surface heightmap (center-based)
+                        this.bucketIndex = system.addParticleToSurface(this.x, this.radius);
+                        // snap particle to bucket center with small jitter so pile spreads
+                        const bx = system.surfaceMinX + this.bucketIndex * system.bucketW + system.bucketW * 0.5;
+                        this.x = Math.max(WEIGH_HOPPER.left + this.radius, Math.min(WEIGH_HOPPER.right - this.radius, bx + (Math.random() - 0.5) * system.bucketW * 0.6));
+                        // position vertically according to updated surface
+                        this.y = system.surface[this.bucketIndex] - this.radius;
+                        // mark as inside hopper for counting/drawing
+                        if (this.x > WEIGH_HOPPER.left && this.x < WEIGH_HOPPER.right) this.inHopper = true;
+                        return false;
+                    }
+                }
+                
+                return false;
+            }
+            
+            updateInHopper(system, isGateOpen, deltaTime) {
+                // ของไหลจะไหลและปรับตัว
+                if (isGateOpen && !this.isExiting) {
+                    // แรงดึงเข้าหาประตู
+                    const centerX = 300;
+                    const dx = centerX - this.x;
+                    
+                    this.vx += dx * 0.0005 * deltaTime;
+                    this.vy += 0.0002 * deltaTime;
+                    
+                    // ถ้าใกล้ประตูมากพอ ให้เริ่มไหลออก
+                    if (Math.abs(dx) < 40 && this.y > WEIGH_HOPPER.bottom - 30) {
+                        this.isExiting = true;
+                        this.vx = dx * 0.02;
+                        this.vy = 3;
+                    }
+                }
+                
+                // การเคลื่อนที่แบบของไหลที่อยู่กับที่
+                if (Math.random() < 0.01) {
+                    this.vx += (Math.random() - 0.5) * 0.2;
+                }
+                
+                this.x += this.vx;
+                this.y += this.vy;
+                
+                // ตรวจสอบการชนกับขอบ
+                this.checkWallCollision();
+                
+                // ความหนืด
+                this.vx *= 0.97;
+                this.vy *= 0.97;
+                
+                return false;
+            }
+            
+            updateExiting(deltaTime) {
+                // ไหลออกจากถัง
+                this.vy += GRAVITY * 0.2;
+                this.x += this.vx * deltaTime * 0.1;
+                this.y += this.vy * deltaTime * 0.1;
+                
+                // กลับมาทางกลางเมื่อผ่านประตู
+                if (this.x > 270 && this.x < 330) {
+                    this.vx += (300 - this.x) * 0.0001 * deltaTime;
+                }
+                
+                // ลบเม็ดที่ไหลออกไปแล้ว
+                return this.y > 520;
+            }
+            
+            checkWallCollision() {
+                // ชนขอบซ้าย
+                if (this.x - this.radius < WEIGH_HOPPER.left) {
+                    this.x = WEIGH_HOPPER.left + this.radius;
+                    this.vx = Math.abs(this.vx) * 0.7;
+                }
+                // ชนขอบขวา
+                else if (this.x + this.radius > WEIGH_HOPPER.right) {
+                    this.x = WEIGH_HOPPER.right - this.radius;
+                    this.vx = -Math.abs(this.vx) * 0.7;
+                }
+                
+                // ชนพื้นถัง
+                if (this.y + this.radius > WEIGH_HOPPER.bottom) {
+                    this.y = WEIGH_HOPPER.bottom - this.radius;
+                    this.vy = -Math.abs(this.vy) * 0.5;
+                }
+            }
+            
+            // surface lookup removed; system provides heightmap
+            
+            draw(ctx) {
+                // วาดเม็ดพลาสติกแบบน้ำ
+                ctx.beginPath();
+                ctx.arc(this.x, this.y, this.radius, 0, Math.PI * 2);
+                
+                // สีตามสถานะและอายุ
+                let alpha = 1;
+                let color;
+                
+                if (this.isExiting) {
+                    // สีอ่อนเมื่อไหลออก
+                    alpha = 0.8;
+                    color = `rgba(180, 200, 255, ${alpha})`;
+                } else if (this.isLanded) {
+                    // สีตามตำแหน่งในถัง (ล่าง-เข้ม, บน-อ่อน)
+                    const depth = (this.y - WEIGH_HOPPER.top) / WEIGH_HOPPER.height;
+                    const brightness = 0.6 + depth * 0.4;
+                    const r = 100 * brightness;
+                    const g = 120 * brightness;
+                    const b = 248;
+                    alpha = 0.9;
+                    color = `rgba(${r}, ${g}, ${b}, ${alpha})`;
+                } else {
+                    // สีเม็ดที่กำลังตก (ใสกว่า)
+                    alpha = 0.7;
+                    const ageFactor = Math.min(1, this.lifetime / 1000);
+                    const r = 129 + (255-129) * ageFactor;
+                    const g = 140 + (255-140) * ageFactor;
+                    const b = 248;
+                    color = `rgba(${r}, ${g}, ${b}, ${alpha})`;
+                    
+                    // วาดเส้นแสดงทิศทาง (เหมือนหยดน้ำไหล)
+                    if (Math.sqrt(this.vx*this.vx + this.vy*this.vy) > 2) {
+                        ctx.beginPath();
+                        ctx.moveTo(this.x, this.y);
+                        const len = this.radius * 1.5;
+                        ctx.lineTo(
+                            this.x - this.vx * len,
+                            this.y - this.vy * len
+                        );
+                        ctx.strokeStyle = `rgba(200, 220, 255, ${alpha * 0.5})`;
+                        ctx.lineWidth = 1;
+                        ctx.stroke();
+                    }
+                }
+                
+                ctx.fillStyle = color;
+                ctx.fill();
+                
+                // เงา/แสงสะท้อนสำหรับเม็ดที่กำลังตก
+                if (!this.isLanded && !this.isExiting) {
+                    ctx.beginPath();
+                    ctx.arc(
+                        this.x - this.vx * 0.5,
+                        this.y - this.vy * 0.5,
+                        this.radius * 0.3,
+                        0, Math.PI * 2
+                    );
+                    ctx.fillStyle = `rgba(255, 255, 255, 0.2)`;
+                    ctx.fill();
+                }
+            }
+        }
+
+        class Hopper {
+            constructor(x, y, width, height) {
+                this.x = x; 
+                this.y = y; 
+                this.width = width; 
+                this.height = height;
+                this.gateOpen = false;
+            }
+            
+            draw(ctx) {
+                // วาดถัง
+                ctx.strokeStyle = '#94a3b8';
+                ctx.lineWidth = 4;
+                ctx.beginPath();
+                ctx.moveTo(this.x - this.width/2, this.y);
+                ctx.lineTo(this.x + this.width/2, this.y);
+                ctx.lineTo(this.x + this.width/6, this.y + this.height);
+                ctx.lineTo(this.x - this.width/6, this.y + this.height);
+                ctx.closePath();
+                ctx.stroke();
+                
+                // วาดประตู
+                ctx.strokeStyle = this.gateOpen ? '#10b981' : '#f43f5e';
+                ctx.lineWidth = 3;
+                const gateY = this.y + this.height + 2;
+                const gx1 = this.x - this.width/6;
+                const gx2 = this.x + this.width/6;
+                
+                ctx.beginPath();
+                if (this.gateOpen) {
+                    // ประตูเปิดแบบฝักบัว (เปิดกว้าง)
+                    ctx.moveTo(gx1, gateY);
+                    ctx.lineTo(gx1 - 25, gateY + 35);
+                    ctx.moveTo(gx2, gateY);
+                    ctx.lineTo(gx2 + 25, gateY + 35);
+                } else {
+                    ctx.moveTo(gx1, gateY);
+                    ctx.lineTo(gx2, gateY);
+                }
+                ctx.stroke();
+                
+                // วาดช่องเปิดประตู (เมื่อเปิด)
+                if (this.gateOpen) {
+                    ctx.setLineDash([3, 2]);
+                    ctx.beginPath();
+                    ctx.moveTo(gx1, gateY);
+                    ctx.lineTo(gx2, gateY);
+                    ctx.stroke();
+                    ctx.setLineDash([]);
+                }
+            }
+        }
+
+        class ShowerWeighingSystem {
+            constructor() {
+                this.canvas = document.getElementById('hopperCanvas');
+                this.ctx = this.canvas.getContext('2d');
+                this.particles = [];
+                this.weight = 0;
+                this.totalWeight = 0;
+                this.isAutoMode = false;
+                this.phase = 'IDLE'; 
+                this.cycleStartTime = 0;
+                this.lastFrameTime = 0;
+                this.particlesInHopper = 0;
+                this.flowActive = false;
+                this.flowMode = 'COARSE'; // 'COARSE' or 'FINE'
+                this.flowRate = 50; // 1-100
+                this.spreadWidth = 80; // 10-200
+                this.particlesPerSecond = 0;
+                this.lastSpawnTime = 0;
+                
+                this.initElements();
+                this.initEvents();
+                this.animate();
+            }
+
+            initElements() {
+                this.weightDisplay = document.getElementById('weightDisplay');
+                this.totalDisplay = document.getElementById('totalThroughput');
+                this.stageDisplay = document.getElementById('stageIndicator');
+                this.timerDisplay = document.getElementById('cycleTimer');
+                this.flowRateDisplay = document.getElementById('flowRate');
+                this.spreadWidthDisplay = document.getElementById('spreadWidth');
+                this.particleRateDisplay = document.getElementById('particleRate');
+                this.waterFlowElement = document.getElementById('waterFlow');
+                
+                this.topHopper = new Hopper(300, 50, 200, 100);
+                this.weighHopper = new Hopper(300, 230, 180, 100);
+                // surface heightmap for weigh hopper (for sand-like piling)
+                const hopperLeft = this.weighHopper.x - (this.weighHopper.width / 6) + 4;
+                const hopperRight = this.weighHopper.x + (this.weighHopper.width / 6) - 4;
+                this.surfaceMinX = Math.round(hopperLeft);
+                this.surfaceMaxX = Math.round(hopperRight);
+                this.bucketW = 6; // pixels per bucket
+                this.bucketCount = Math.max(10, Math.ceil((this.surfaceMaxX - this.surfaceMinX) / this.bucketW) + 1);
+                const baseY = Math.round(this.weighHopper.y + this.weighHopper.height);
+                this.surface = new Array(this.bucketCount).fill(baseY);
+            }
+
+            initEvents() {
+                const toggleBtn = document.getElementById('toggleBtn');
+                toggleBtn.onclick = () => {
+                    if (!this.flowActive) {
+                        this.startShowerFlow();
+                        toggleBtn.innerText = 'STOP SHOWER FLOW';
+                        toggleBtn.classList.remove('bg-blue-600');
+                        toggleBtn.classList.add('bg-red-600');
+                    } else {
+                        this.stopShowerFlow();
+                        toggleBtn.innerText = 'START SHOWER FLOW';
+                        toggleBtn.classList.remove('bg-red-600');
+                        toggleBtn.classList.add('bg-blue-600');
+                    }
+                };
+                
+                document.getElementById('coarseBtn').onclick = () => {
+                    this.flowMode = 'COARSE';
+                    this.flowRate = 70;
+                    document.getElementById('flowSlider').value = this.flowRate;
+                    this.updateFlowSettings();
+                };
+                
+                document.getElementById('fineBtn').onclick = () => {
+                    this.flowMode = 'FINE';
+                    this.flowRate = 30;
+                    document.getElementById('flowSlider').value = this.flowRate;
+                    this.updateFlowSettings();
+                };
+                
+                document.getElementById('resetBtn').onclick = () => {
+                    this.resetSystem();
+                    toggleBtn.innerText = 'START SHOWER FLOW';
+                    toggleBtn.classList.remove('bg-red-600');
+                    toggleBtn.classList.add('bg-blue-600');
+                };
+                
+                // Slider events
+                document.getElementById('flowSlider').addEventListener('input', (e) => {
+                    this.flowRate = parseInt(e.target.value);
+                    this.updateFlowSettings();
+                });
+                
+                document.getElementById('spreadSlider').addEventListener('input', (e) => {
+                    this.spreadWidth = parseInt(e.target.value);
+                    this.updateFlowSettings();
+                });
+            }
+            
+            updateFlowSettings() {
+                // อัปเดตแสดงค่า
+                let flowText;
+                if (this.flowRate < 20) flowText = 'Very Slow';
+                else if (this.flowRate < 40) flowText = 'Slow';
+                else if (this.flowRate < 60) flowText = 'Medium';
+                else if (this.flowRate < 80) flowText = 'Fast';
+                else flowText = 'Very Fast';
+                
+                this.flowRateDisplay.textContent = flowText;
+                
+                let spreadText;
+                if (this.spreadWidth < 40) spreadText = 'Narrow';
+                else if (this.spreadWidth < 80) spreadText = 'Normal';
+                else if (this.spreadWidth < 120) spreadText = 'Wide';
+                else spreadText = 'Very Wide';
+                
+                this.spreadWidthDisplay.textContent = spreadText;
+            }
+
+            startShowerFlow() {
+                this.flowActive = true;
+                this.phase = 'FEEDING';
+                this.cycleStartTime = Date.now();
+                this.weighHopper.gateOpen = false;
+                this.stageDisplay.innerText = "SHOWER FLOW";
+                this.waterFlowElement.style.opacity = '0.3';
+                
+                console.log("เริ่มโหมดฝักบัว - การไหลต่อเนื่อง");
+            }
+            
+            stopShowerFlow() {
+                this.flowActive = false;
+                this.phase = 'STABILIZING';
+                this.stageDisplay.innerText = "STABILIZING";
+                this.waterFlowElement.style.opacity = '0';
+                
+                // รอให้ stabilize แล้วชั่งน้ำหนัก
+                setTimeout(() => {
+                    this.weighHopper.gateOpen = true;
+                    this.stageDisplay.innerText = "DISCHARGING";
+                    this.totalWeight += this.weight;
+                    this.totalDisplay.innerText = this.totalWeight.toFixed(2) + " kg";
+                    
+                    // ปล่อยน้ำหนักออก
+                    setTimeout(() => {
+                        this.weighHopper.gateOpen = false;
+                        this.stageDisplay.innerText = "COMPLETE";
+                        
+                        // รอให้เม็ดไหลออกหมด
+                        setTimeout(() => {
+                            this.resetForNextCycle();
+                        }, 1000);
+                    }, DISCHARGE_TIME);
+                }, STABILIZE_TIME);
+            }
+            
+            resetForNextCycle() {
+                this.weight = 0;
+                this.particles = [];
+                this.particlesInHopper = 0;
+                this.phase = 'IDLE';
+                this.stageDisplay.innerText = "READY";
+                // reset surface heightmap
+                if (this.surface && this.surface.length) {
+                    const baseY = Math.round(this.weighHopper.y + this.weighHopper.height);
+                    for (let i = 0; i < this.surface.length; i++) this.surface[i] = baseY;
+                }
+            }
+            
+            resetSystem() {
+                this.flowActive = false;
+                this.weight = 0;
+                this.totalWeight = 0;
+                this.particles = [];
+                this.particlesInHopper = 0;
+                this.phase = 'IDLE';
+                this.stageDisplay.innerText = "STANDBY";
+                this.totalDisplay.innerText = "0.00 kg";
+                this.weightDisplay.innerText = "0.00";
+                this.waterFlowElement.style.opacity = '0';
+                
+                document.getElementById('toggleBtn').innerText = 'START SHOWER FLOW';
+                document.getElementById('toggleBtn').classList.remove('bg-red-600');
+                document.getElementById('toggleBtn').classList.add('bg-blue-600');
+            }
+
+            spawnShowerParticles(currentTime) {
+                if (!this.flowActive || this.phase !== 'FEEDING') return;
+                
+                // คำนวณจำนวนเม็ดที่จะ spawn ตาม flow rate
+                const spawnInterval = Math.max(10, 100 - this.flowRate); // ms
+                const particlesPerSpawn = Math.ceil(this.flowRate / 20);
+                
+                if (currentTime - this.lastSpawnTime > spawnInterval) {
+                    // สร้างเม็ดแบบฝักบัว (กระจายเป็นวงกว้าง)
+                    for (let i = 0; i < particlesPerSpawn; i++) {
+                        // ตำแหน่งเริ่มต้นแบบสุ่มในบริเวณฝักบัว
+                        const spread = this.spreadWidth;
+                        const x = 300 + (Math.random() - 0.5) * spread;
+                        
+                        // ความเร็วแบบฝักบัว (ตกแบบมีมุม)
+                        const angleSpread = Math.PI / 6; // 30 องศา
+                        const angle = (Math.random() - 0.5) * angleSpread;
+                        const speed = 2 + Math.random() * (this.flowRate / 20);
+                        
+                        const vx = Math.sin(angle) * speed * 0.5;
+                        const vy = Math.cos(angle) * speed;
+                        
+                        // ขนาดเม็ดตาม flow mode
+                        let size = PARTICLE_RADIUS;
+                        if (this.flowMode === 'COARSE') {
+                            size *= (1 + Math.random() * 0.5);
+                        } else {
+                            size *= (0.7 + Math.random() * 0.3);
+                        }
+                        
+                        const p = new ShowerParticle(x, 150, vx, vy, size);
+                        p.bucketIndex = null;
+                        this.particles.push(p);
+                    }
+                    
+                    this.lastSpawnTime = currentTime;
+                    this.particlesPerSecond = Math.round((particlesPerSpawn * 1000) / spawnInterval);
+                }
+            }
+
+            animate(currentTime = 0) {
+                const deltaTime = currentTime - this.lastFrameTime || 16;
+                this.lastFrameTime = currentTime;
+                
+                // ล้าง Canvas
+                this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
+                
+                // วาดพื้นหลังถังชั่ง
+                this.ctx.fillStyle = 'rgba(30, 41, 59, 0.4)';
+                this.ctx.fillRect(WEIGH_HOPPER.left, WEIGH_HOPPER.top, 
+                                 WEIGH_HOPPER.width, WEIGH_HOPPER.height);
+                
+                // วาดถัง
+                this.topHopper.draw(this.ctx);
+                this.weighHopper.draw(this.ctx);
+                
+                // วาดพื้น
+                this.ctx.fillStyle = '#475569';
+                this.ctx.fillRect(100, 480, 400, 20);
+                
+                // แสดงเวลา (ถ้ากำลังทำงาน)
+                if (this.cycleStartTime > 0 && this.phase !== 'IDLE') {
+                    const elapsed = (Date.now() - this.cycleStartTime) / 1000;
+                    this.timerDisplay.innerText = elapsed.toFixed(1) + "s";
+                }
+
+                // สร้างเม็ดใหม่ (โหมดฝักบัว)
+                this.spawnShowerParticles(currentTime);
+                
+                // อัปเดตและวาดเม็ดทั้งหมด
+                let newParticlesInHopper = 0;
+                let particlesToRemove = [];
+                
+                for (let i = 0; i < this.particles.length; i++) {
+                    let p = this.particles[i];
+
+                    // อัปเดตเม็ด — pass system reference so particle uses heightmap
+                    const shouldRemove = p.update(this, this.weighHopper.gateOpen, deltaTime);
+                    
+                    // นับเม็ดที่อยู่ในถัง
+                    if (p.inHopper && !p.isExiting) {
+                        newParticlesInHopper++;
+                    }
+                    
+                    // ตรวจสอบว่าควรลบหรือไม่
+                    if (shouldRemove === true || p.y > 520) {
+                        particlesToRemove.push(i);
+                    } else {
+                        p.draw(this.ctx);
+                    }
+                }
+                
+                // ลบเม็ดที่ควรลบ
+                for (let i = particlesToRemove.length - 1; i >= 0; i--) {
+                    this.particles.splice(particlesToRemove[i], 1);
+                }
+                
+                // อัปเดตจำนวนเม็ดในถังและน้ำหนัก
+                // Always update particle count and recompute weight during feeding/stabilizing
+                this.particlesInHopper = newParticlesInHopper;
+                if (this.phase === 'FEEDING' || this.phase === 'STABILIZING') {
+                    const weightPerParticle = 0.12;
+                    this.weight = Math.min(TARGET_WEIGHT, this.particlesInHopper * weightPerParticle);
+
+                    // ถ้าเต็มแล้วให้หยุดไหลอัตโนมัติ
+                    if (this.weight >= TARGET_WEIGHT && this.flowActive) {
+                        this.stopShowerFlow();
+                    }
+                }
+                
+                // อัปเดตน้ำหนักบนหน้าจอ
+                this.weightDisplay.innerText = this.weight.toFixed(2);
+                
+                // อัปเดตอัตราการ spawn
+                this.particleRateDisplay.textContent = this.particlesPerSecond;
+                
+                // แสดงข้อมูล debug
+                this.ctx.fillStyle = 'rgba(255, 255, 255, 0.7)';
+                this.ctx.font = '10px Arial';
+                this.ctx.fillText(`Flow: ${this.flowMode}`, 10, 20);
+                this.ctx.fillText(`Particles: ${this.particles.length}`, 10, 35);
+                this.ctx.fillText(`In Hopper: ${this.particlesInHopper}`, 10, 50);
+                this.ctx.fillText(`Weight: ${this.weight.toFixed(2)} kg`, 10, 65);
+                
+                // วาดเอฟเฟกต์น้ำไหล (เมื่อเปิดโหมดฝักบัว)
+                if (this.flowActive && this.phase === 'FEEDING') {
+                    this.drawWaterFlowEffect();
+                }
+                
+                // ลูปแอนิเมชัน
+                requestAnimationFrame((time) => this.animate(time));
+            }
+            
+            drawWaterFlowEffect() {
+                // วาดเอฟเฟกต์น้ำไหลจากถังบน
+                const flowHeight = 100;
+                const flowWidth = this.spreadWidth;
+                
+                this.ctx.save();
+                this.ctx.beginPath();
+                this.ctx.moveTo(300 - flowWidth/2, 150);
+                this.ctx.quadraticCurveTo(300, 180, 300 + flowWidth/2, 150);
+                this.ctx.lineTo(300 + flowWidth/2, 150 + flowHeight);
+                this.ctx.quadraticCurveTo(300, 150 + flowHeight - 20, 300 - flowWidth/2, 150 + flowHeight);
+                this.ctx.closePath();
+                
+                // Gradient สำหรับเอฟเฟกต์น้ำ
+                const gradient = this.ctx.createLinearGradient(300, 150, 300, 150 + flowHeight);
+                gradient.addColorStop(0, 'rgba(129, 140, 248, 0.1)');
+                gradient.addColorStop(0.5, 'rgba(129, 140, 248, 0.05)');
+                gradient.addColorStop(1, 'transparent');
+                
+                this.ctx.fillStyle = gradient;
+                this.ctx.fill();
+                this.ctx.restore();
+            }
+
+            // Surface heightmap helpers
+            getSurfaceY(x) {
+                if (!this.surface) return WEIGH_HOPPER.bottom;
+                const idx = Math.floor((x - this.surfaceMinX) / this.bucketW);
+                const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+                const bidx = clamp(idx, 0, this.bucketCount - 1);
+                // use min of neighbors to allow concave valleys
+                let local = this.surface[bidx];
+                if (bidx > 0) local = Math.min(local, this.surface[bidx - 1]);
+                if (bidx < this.bucketCount - 1) local = Math.min(local, this.surface[bidx + 1]);
+                return local;
+            }
+
+            addParticleToSurface(x, radius) {
+                if (!this.surface) return null;
+                const idx = Math.floor((x - this.surfaceMinX) / this.bucketW);
+                const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+                // look for the lowest bucket within a small neighborhood to avoid vertical stacking
+                const bidx0 = clamp(idx, 0, this.bucketCount - 1);
+                const searchRadius = 3; // search ±3 buckets
+                let bestIdx = bidx0;
+                let bestH = this.surface[bidx0];
+                for (let d = -searchRadius; d <= searchRadius; d++) {
+                    const ni = bidx0 + d;
+                    if (ni < 0 || ni >= this.bucketCount) continue;
+                    if (this.surface[ni] < bestH) {
+                        bestH = this.surface[ni];
+                        bestIdx = ni;
+                    }
+                }
+                const bidx = bestIdx;
+                // particle top sits at surface[bidx] - radius; compute new center height
+                const centerH = this.surface[bidx];
+                const newCenter = centerH - radius * 2;
+                this.surface[bidx] = Math.min(centerH, newCenter);
+                // spread to neighbors to form cone based on newCenter (wider spread)
+                const spread = 7;
+                for (let n = bidx - spread; n <= bidx + spread; n++) {
+                    if (n < 0 || n >= this.bucketCount) continue;
+                    const desired = newCenter + Math.abs(n - bidx) * (radius * 1.4);
+                    this.surface[n] = Math.min(this.surface[n], desired);
+                }
+                return bidx;
+            }
+        }
+
+        window.onload = () => new ShowerWeighingSystem();
+    </script>
+</body>
+</html>

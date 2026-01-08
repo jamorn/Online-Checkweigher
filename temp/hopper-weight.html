@@ -1,0 +1,556 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Hopper Weigher - Zero Leakage Edition</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body { background-color: #0f172a; }
+        canvas { background: #1e293b; border-radius: 12px; box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.5); }
+        .lcd-display {
+            background: #000;
+            color: #10b981;
+            font-family: 'Courier New', Courier, monospace;
+            text-shadow: 0 0 8px #10b981;
+        }
+        .stats-card {
+            background: rgba(30, 41, 59, 0.7);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+    </style>
+</head>
+<body class="flex flex-col items-center justify-center min-h-screen p-4 text-slate-200">
+
+    <div class="max-w-5xl w-full p-6">
+        <div class="flex justify-between items-end mb-6">
+            <div>
+                <h1 class="text-3xl font-bold text-white">Hopper Scale Automation</h1>
+                <p class="text-slate-400">Target Capacity: 30 Tons/Hr (1,200 Cycles/Hr)</p>
+            </div>
+            <div class="stats-card p-4 rounded-lg text-right">
+                <div class="text-xs uppercase text-slate-500">Total Throughput</div>
+                <div id="totalThroughput" class="text-2xl font-bold text-blue-400">0.00 kg</div>
+            </div>
+        </div>
+        
+        <div class="relative flex flex-col md:flex-row gap-6">
+            <!-- Animation Area -->
+            <div class="relative flex-grow">
+                <canvas id="hopperCanvas" width="600" height="500" class="w-full h-auto"></canvas>
+                
+                <!-- Weighing Indicator -->
+                <div class="absolute top-44 right-6 lcd-display p-4 rounded-lg border-2 border-slate-700 min-w-[180px]">
+                    <div class="flex justify-between text-[10px] mb-1 opacity-70">
+                        <span>NET WEIGHT</span>
+                        <span id="cycleTimer">0.0s</span>
+                    </div>
+                    <div id="weightDisplay" class="text-4xl font-bold tracking-tighter text-right">0.00</div>
+                    <div class="flex justify-between items-center mt-2 border-t border-slate-800 pt-1">
+                        <span class="text-[10px]" id="stageIndicator">STANDBY</span>
+                        <span class="text-[10px]">KG</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Controls & Dashboard -->
+            <div class="w-full md:w-80 flex flex-col gap-4">
+                <div class="stats-card p-4 rounded-xl">
+                    <h3 class="text-sm font-bold mb-4 flex items-center gap-2">
+                        <span class="w-2 h-2 rounded-full bg-green-500 animate-pulse"></span>
+                        LIVE CONTROL
+                    </h3>
+                    <div class="space-y-4">
+                        <button id="toggleBtn" class="w-full py-4 bg-blue-600 hover:bg-blue-500 text-white font-bold rounded-lg transition-all shadow-lg active:scale-95">
+                            START AUTO CYCLE
+                        </button>
+                        <button id="resetBtn" class="w-full py-2 bg-slate-700 hover:bg-slate-600 text-white rounded-lg transition-all">
+                            RESET SYSTEM
+                        </button>
+                    </div>
+                </div>
+
+                <div class="stats-card p-4 rounded-xl flex-grow">
+                    <h3 class="text-sm font-bold mb-3 text-slate-400">CYCLE PROGRESS</h3>
+                    <div class="space-y-3">
+                        <div id="step1" class="text-xs p-2 rounded border border-slate-700 transition-all">1. COARSE (24.5kg)</div>
+                        <div id="step2" class="text-xs p-2 rounded border border-slate-700 transition-all">2. FINE 1 (24.8kg)</div>
+                        <div id="step3" class="text-xs p-2 rounded border border-slate-700 transition-all">3. FINE 2 (25.0kg)</div>
+                        <div id="step4" class="text-xs p-2 rounded border border-slate-700 transition-all">4. STABILIZE / DISCHARGE</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const TARGET_WEIGHT = 25.00;
+        const COARSE_TARGET = 24.50;
+        const FINE1_TARGET = 24.80;
+        // cycle timing (fixed to meet 30 tons/hr => 1200 cycles/hr => 3.0 s per cycle)
+        const CYCLE_DURATION = 3.0; // seconds per cycle (fixed)
+        const COARSE_DUR = 1.6; // seconds
+        const FINE1_DUR = 0.8; // seconds
+        const FINE2_DUR = 0.4; // seconds
+        const STABILIZE_DUR = 0.1; // seconds
+        const DISCHARGE_DUR = 0.1; // seconds (hopper open to discharge)
+        const WEIGH_BOTTOM_Y = 330; // ระดับก้นถังชั่ง
+        // Physics / timestep parameters
+        const FPS = 60;
+        const DEFAULT_DT = 1 / FPS;
+        const MAX_DT = 0.05; // clamp large frame deltas (s)
+        // gravity in pixels per second^2 (tweak for realism)
+        const GRAVITY_PX = 900;
+        // pairwise repulsion stiffness
+        const REPULSION_K = 2200;
+        // surface contact stiffness
+        const SURFACE_K = 14000;
+        // damping / friction coefficients
+        const SURFACE_FRICTION = 0.75; // multiply horizontal velocity when contacting surface
+        const AIR_DAMPING = 0.995;
+        
+                class Particle {
+                    constructor(x, y, radius, speedMultiplier) {
+                        this.x = x;
+                        this.y = y;
+                        this.radius = radius;
+                        // velocities in px/s
+                        this.vx = (Math.random() - 0.5) * 40;
+                        this.vy = (120 + Math.random() * 120) * speedMultiplier;
+                        this.ax = 0;
+                        this.ay = 0;
+                        this.mass = 1;
+                        this.isLanded = false;
+                        this.bucketIndex = null;
+                    }
+
+                    // apply accumulated accelerations and integrate using semi-implicit Euler
+                    integrate(dt) {
+                        // v += a * dt
+                        this.vx += this.ax * dt;
+                        this.vy += this.ay * dt;
+                        // position update
+                        this.x += this.vx * dt;
+                        this.y += this.vy * dt;
+                        // simple air damping
+                        this.vx *= AIR_DAMPING;
+                        this.vy *= AIR_DAMPING;
+                        // clear accelerations for next step
+                        this.ax = 0; this.ay = 0;
+                    }
+
+                    draw(ctx) {
+                        ctx.beginPath();
+                        ctx.arc(this.x, this.y, this.radius, 0, Math.PI * 2);
+                        ctx.fillStyle = '#818cf8';
+                        ctx.fill();
+                        ctx.closePath();
+                    }
+                }
+
+        class Hopper {
+            constructor(x, y, width, height, opts = {}) {
+                this.x = x; this.y = y; this.width = width; this.height = height;
+                this.gateOpen = false;
+                this.hasFlap = !!opts.hasFlap;
+                // flap state (0..1) represents openness; angle used for drawing
+                this.flapOpen = 0; // 0 closed, 1 open
+                this.flapTarget = 0;
+                this.flapMaxAngle = Math.PI / 3; // visual max
+            }
+            draw(ctx) {
+                ctx.strokeStyle = '#64748b';
+                ctx.lineWidth = 3;
+                ctx.beginPath();
+                ctx.moveTo(this.x - this.width/2, this.y);
+                ctx.lineTo(this.x + this.width/2, this.y);
+                ctx.lineTo(this.x + this.width/6, this.y + this.height);
+                ctx.lineTo(this.x - this.width/6, this.y + this.height);
+                ctx.closePath();
+                ctx.stroke();
+                ctx.strokeStyle = this.gateOpen ? '#10b981' : '#f43f5e';
+                const gateY = this.y + this.height + 2;
+                const gx1 = this.x - this.width/6;
+                const gx2 = this.x + this.width/6;
+                ctx.beginPath();
+                if (this.gateOpen) {
+                    ctx.moveTo(gx1, gateY); ctx.lineTo(gx1 - 10, gateY + 15);
+                    ctx.moveTo(gx2, gateY); ctx.lineTo(gx2 + 10, gateY + 15);
+                } else {
+                    ctx.moveTo(gx1, gateY); ctx.lineTo(gx2, gateY);
+                }
+                ctx.stroke();
+
+                // draw flap if present (at bottom center of hopper)
+                if (this.hasFlap) {
+                    const flapCx = this.x;
+                    const flapCy = this.y + this.height - 6;
+                    const flapHalf = 18;
+                    const angle = -this.flapOpen * this.flapMaxAngle; // negative rotates downward
+
+                    ctx.save();
+                    ctx.translate(flapCx, flapCy);
+                    ctx.rotate(angle);
+                    ctx.strokeStyle = '#cbd5e1';
+                    ctx.lineWidth = 3;
+                    ctx.beginPath();
+                    ctx.moveTo(-flapHalf, 0);
+                    ctx.lineTo(flapHalf, 0);
+                    ctx.stroke();
+                    ctx.restore();
+                }
+            }
+        }
+
+        class WeighingSystem {
+            constructor() {
+                this.canvas = document.getElementById('hopperCanvas');
+                this.ctx = this.canvas.getContext('2d');
+                this.particles = [];
+                this.weight = 0;
+                this.totalWeight = 0;
+                this.isAutoMode = false;
+                this.phase = 'IDLE'; 
+                this.cycleStartTime = 0;
+                
+                this.weightDisplay = document.getElementById('weightDisplay');
+                this.totalDisplay = document.getElementById('totalThroughput');
+                this.stageDisplay = document.getElementById('stageIndicator');
+                this.timerDisplay = document.getElementById('cycleTimer');
+                
+                this.topHopper = new Hopper(300, 50, 200, 100, { hasFlap: true });
+                this.weighHopper = new Hopper(300, 230, 180, 100);
+                // surface height map for stacking particles (x range covers weigh hopper interior)
+                const hopperLeft = this.weighHopper.x - (this.weighHopper.width / 6) + 4; // match draw logic
+                const hopperRight = this.weighHopper.x + (this.weighHopper.width / 6) - 4;
+                this.surfaceMinX = Math.round(hopperLeft);
+                this.surfaceMaxX = Math.round(hopperRight);
+                this.bucketW = 2;
+                this.bucketCount = Math.max(10, Math.ceil((this.surfaceMaxX - this.surfaceMinX) / this.bucketW) + 1);
+                // initialize surface at the bottom inside the hopper
+                const baseY = Math.round(this.weighHopper.y + this.weighHopper.height);
+                this.surface = new Array(this.bucketCount).fill(baseY);
+
+                // timing for physics integration
+                this.lastTime = performance.now();
+
+                // sensor accuracy (±10 g)
+                this.sensorAccuracy = 0.010; // kg
+
+                // displayed weight smoothing and calibration offset
+                this.displayedWeight = 0;
+                this.calibrationOffset = 0; // applied to measured reading for zeroing
+
+                this.initEvents();
+                this.animate();
+            }
+
+            initEvents() {
+                const btn = document.getElementById('toggleBtn');
+                btn.onclick = () => {
+                    this.isAutoMode = !this.isAutoMode;
+                    btn.innerText = this.isAutoMode ? 'STOP AUTO CYCLE' : 'START AUTO CYCLE';
+                    btn.classList.toggle('bg-blue-600');
+                    btn.classList.toggle('bg-red-600');
+                    if(this.isAutoMode && this.phase === 'IDLE') this.startNewCycle();
+                };
+                document.getElementById('resetBtn').onclick = () => location.reload();
+            }
+
+            startNewCycle() {
+                this.weight = 0;
+                this.cycleStartTime = Date.now();
+                this.weighHopper.gateOpen = false;
+                // zero the displayed reading when starting a new cycle (simple tare)
+                this.calibrationOffset = -this.weight;
+                this.displayedWeight = 0;
+                this.nextPhase('COARSE_FEED');
+            }
+
+            nextPhase(p) {
+                this.phase = p;
+                this.updateStepUI();
+                switch(p) {
+                    case 'COARSE_FEED':
+                        this.stageDisplay.innerText = "COARSE";
+                        this.topHopper.gateOpen = true;
+                        // flap fully open for coarse feed
+                        this.topHopper.flapTarget = 1.0;
+                        break;
+                    case 'FINE_FEED_1':
+                        this.stageDisplay.innerText = "FINE 1";
+                        // partial flap for finer feed
+                        this.topHopper.flapTarget = 0.45;
+                        break;
+                    case 'FINE_FEED_2':
+                        this.stageDisplay.innerText = "FINE 2";
+                        // very small flap opening for fine tuning
+                        this.topHopper.flapTarget = 0.12;
+                        break;
+                    case 'STABILIZING':
+                        this.stageDisplay.innerText = "STABLE";
+                        this.topHopper.gateOpen = false;
+                        this.topHopper.flapTarget = 0;
+                        break;
+                    case 'DISCHARGING':
+                        this.stageDisplay.innerText = "DISCHARGE";
+                        this.weighHopper.gateOpen = true;
+                        this.totalWeight += TARGET_WEIGHT;
+                        this.totalDisplay.innerText = this.totalWeight.toFixed(2) + " kg";
+                        break;
+                    case 'IDLE':
+                        this.stageDisplay.innerText = "STANDBY";
+                        this.topHopper.gateOpen = false;
+                        this.topHopper.flapTarget = 0;
+                        this.weighHopper.gateOpen = false;
+                        break;
+                }
+            }
+
+            updateStepUI() {
+                ['step1', 'step2', 'step3', 'step4'].forEach(id => {
+                    document.getElementById(id).className = "text-xs p-2 rounded border border-slate-700 transition-all";
+                });
+                const activeId = this.phase.includes('COARSE') ? 'step1' : 
+                                 this.phase.includes('FINE_FEED_1') ? 'step2' :
+                                 this.phase.includes('FINE_FEED_2') ? 'step3' : 
+                                 this.phase.includes('IDLE') ? '' : 'step4';
+                if(activeId) document.getElementById(activeId).className = "text-xs p-2 rounded border border-blue-500 bg-blue-500/20 text-blue-300 font-bold";
+            }
+
+            animate() {
+                this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
+                // draw top hopper first, then particles, then draw weigh hopper on top so particles look inside
+                this.topHopper.draw(this.ctx);
+                this.ctx.fillStyle = '#334155';
+                this.ctx.fillRect(100, 480, 400, 4);
+
+                if (this.cycleStartTime > 0 && this.phase !== 'IDLE') {
+                    const elapsed = (Date.now() - this.cycleStartTime) / 1000;
+                    this.timerDisplay.innerText = elapsed.toFixed(1) + "s";
+                }
+
+                // การสร้างเม็ดพลาสติก — controlled by top hopper flap openness
+                if (this.topHopper.gateOpen) {
+                    // base rate per frame (probability) - increased for faster filling
+                    const baseRate = (this.phase === 'COARSE_FEED') ? 0.5 : (this.phase === 'FINE_FEED_1' ? 0.15 : 0.03);
+                    // flap openness multiplier (0..1)
+                    // first, ease flap towards target
+                    this.topHopper.flapOpen += (this.topHopper.flapTarget - this.topHopper.flapOpen) * 0.12;
+                    const openness = Math.max(0, Math.min(1, this.topHopper.flapOpen));
+                    // spawn probability scaled by openness
+                    const spawnProb = baseRate * openness * 4.5; // stronger scale so flow is visible
+                    if (Math.random() < spawnProb) {
+                        // wider spawn spread so particles enter the weigh hopper with a distribution
+                        const spawnX = 300 + (Math.random()-0.5)*70;
+                        this.particles.push(new Particle(spawnX, 150, 2.3 + Math.random()*1.2, 1.2));
+                    }
+                } else {
+                    // still move flap towards closed when gate is closed
+                    this.topHopper.flapOpen += (this.topHopper.flapTarget - this.topHopper.flapOpen) * 0.12;
+                }
+
+                // อัปเดตและเช็ค Collision / stacking using surface height map
+                // compute dt for physics integration
+                const now = performance.now();
+                let dt = (now - this.lastTime) / 1000;
+                if (!isFinite(dt) || dt <= 0) dt = DEFAULT_DT;
+                dt = Math.min(dt, MAX_DT);
+                this.lastTime = now;
+
+                // reset forces and apply gravity
+                for (let p of this.particles) {
+                    p.ax = 0;
+                    p.ay = GRAVITY_PX; // downward acceleration
+                    // if particle was landed but gate opened, release it
+                    if (p.isLanded && this.weighHopper.gateOpen) {
+                        p.isLanded = false;
+                        p.vy = 80 + Math.random() * 40;
+                        p.vx = (Math.random() - 0.5) * 40;
+                        p.bucketIndex = null;
+                    }
+                }
+
+                // pairwise short-range repulsion (force-based)
+                const insideParticles = this.particles.filter(p => p.y > this.weighHopper.y - 10);
+                for (let a = 0; a < insideParticles.length; a++) {
+                    const pa = insideParticles[a];
+                    for (let b = a + 1; b < insideParticles.length; b++) {
+                        const pb = insideParticles[b];
+                        let dx = pb.x - pa.x;
+                        let dy = pb.y - pa.y;
+                        let dist = Math.sqrt(dx * dx + dy * dy) || 0.0001;
+                        const minD = pa.radius + pb.radius;
+                        if (dist < minD) {
+                            const overlap = (minD - dist);
+                            // repulsive force magnitude (spring-like)
+                            const f = REPULSION_K * overlap;
+                            const nx = dx / dist;
+                            const ny = dy / dist;
+                            // apply equal and opposite forces
+                            pa.ax -= (f * nx) / pa.mass;
+                            pa.ay -= (f * ny) / pa.mass;
+                            pb.ax += (f * nx) / pb.mass;
+                            pb.ay += (f * ny) / pb.mass;
+                        }
+                    }
+                }
+
+                // surface contact forces and landing detection
+                for (let p of this.particles) {
+                    // map x to bucket index
+                    const idx = Math.floor((p.x - this.surfaceMinX) / this.bucketW);
+                    const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+                    const bidx = clamp(idx, 0, this.bucketCount - 1);
+                    // sample local surface (use min of neighbors for concavity)
+                    let local = this.surface[bidx];
+                    if (bidx > 0) local = Math.min(local, this.surface[bidx - 1]);
+                    if (bidx < this.bucketCount - 1) local = Math.min(local, this.surface[bidx + 1]);
+
+                    const penetration = (p.y + p.radius) - local;
+                    let landedNow = false;
+                    if (!this.weighHopper.gateOpen && penetration >= 0) {
+                        // surface normal force (push up)
+                        const fn = SURFACE_K * penetration;
+                        p.ay -= fn / p.mass; // upwards
+
+                        // tangential friction: damp horizontal velocity when contacting
+                        p.vx *= SURFACE_FRICTION;
+
+                        // landing heuristic: low downward speed plus small penetration
+                        if (Math.abs(p.vy) < 60 && penetration > 0.6) {
+                            // snap to surface and mark landed
+                            p.isLanded = true;
+                            p.vx = (Math.random() - 0.5) * 10; // small residual
+                            p.vy = 0;
+                            p.y = local - p.radius;
+                            p.bucketIndex = bidx;
+                            // update surface to reflect particle
+                            this.surface[bidx] = p.y - p.radius;
+                            for (let n = bidx - 4; n <= bidx + 4; n++) {
+                                if (n < 0 || n >= this.bucketCount) continue;
+                                const desired = this.surface[bidx] + Math.abs(n - bidx) * (p.radius * 1.4);
+                                this.surface[n] = Math.min(this.surface[n], desired);
+                            }
+                            landedNow = true;
+                        }
+                    }
+
+                    // integrate motion after forces applied
+                    p.integrate(dt);
+
+                    // removal / falling out
+                    if (p.y > 510) {
+                        if (p.bucketIndex !== null && p.bucketIndex !== undefined) {
+                            const idx2 = p.bucketIndex;
+                            this.surface[idx2] = Math.min(WEIGH_BOTTOM_Y, this.surface[idx2] + p.radius * 2);
+                        }
+                        const remIdx = this.particles.indexOf(p);
+                        if (remIdx >= 0) this.particles.splice(remIdx, 1);
+                        continue;
+                    }
+
+                    // draw particle
+                    p.draw(this.ctx);
+
+                    // wall collisions inside hopper
+                    const minX = this.surfaceMinX + p.radius;
+                    const maxX = this.surfaceMaxX - p.radius;
+                    if (p.x < minX) { p.x = minX; p.vx *= -0.25; }
+                    if (p.x > maxX) { p.x = maxX; p.vx *= -0.25; }
+
+                    // flap blocking (prevent climbing back into top hopper)
+                    const flap = this.topHopper;
+                    const flapCx = flap.x;
+                    const flapCy = flap.y + flap.height - 6;
+                    const flapHalf = 18;
+                    const flapClosedThreshold = 0.4;
+                    if (this.topHopper.flapOpen < flapClosedThreshold) {
+                        const openness = this.topHopper.flapOpen;
+                        const effectiveHalf = flapHalf * (0.5 + openness * 0.6);
+                        const withinFlap = Math.abs(p.x - flapCx) < effectiveHalf;
+                        if (withinFlap && p.y < flapCy - 1) {
+                            p.y = Math.max(p.y, flapCy - p.radius - 0.5);
+                            if (p.vy < 0) p.vy = 0;
+                        }
+                        if (withinFlap && p.y < flapCy + 4 && p.y > flapCy - p.radius - 1) {
+                            p.y = Math.max(p.y, flapCy - p.radius - 0.5);
+                            if (p.vy < 0) p.vy = 0;
+                        }
+                    }
+
+                    // if particle landed this frame, increment measured weight
+                    if (landedNow) {
+                        if (this.phase === 'COARSE_FEED') this.weight += 0.25;
+                        else if (this.phase === 'FINE_FEED_1') this.weight += 0.08;
+                        else if (this.phase === 'FINE_FEED_2') this.weight += 0.02;
+                        if (this.weight >= TARGET_WEIGHT) this.weight = TARGET_WEIGHT;
+                    }
+                }
+
+                
+
+                // draw weigh hopper on top of particles to contain them visually
+                this.weighHopper.draw(this.ctx);
+
+                // compute measured reading (truth + sensor noise)
+                const measuredRaw = this.weight + ((Math.random() * 2 - 1) * this.sensorAccuracy);
+
+                // choose smoothing depending on phase to reduce jitter
+                let alpha;
+                if (this.phase === 'STABILIZING') {
+                    alpha = 0.03; // slow smoothing when stabilizing
+                } else if (this.phase === 'IDLE' && !this.topHopper.gateOpen) {
+                    alpha = 0.04; // idle - keep stable around zero
+                } else if (this.topHopper && this.topHopper.flapOpen > 0.1) {
+                    alpha = 0.25; // when feeding, be more responsive
+                } else {
+                    alpha = 0.12; // default moderate smoothing
+                }
+
+                const measuredCorrected = measuredRaw + this.calibrationOffset;
+                // exponential moving average for displayed value
+                this.displayedWeight = (1 - alpha) * this.displayedWeight + alpha * measuredCorrected;
+
+                // avoid showing '-0.00' due to tiny negative noise: clamp near-zero values
+                const zeroThreshold = 0.005; // 5 grams
+                const dispVal = Math.abs(this.displayedWeight) < zeroThreshold ? 0 : this.displayedWeight;
+                this.weightDisplay.innerText = dispVal.toFixed(2);
+
+                // schedule phases based on fixed cycle timing
+                if (this.cycleStartTime > 0) {
+                    const now = Date.now();
+                    const elapsed = (now - this.cycleStartTime) / 1000;
+                    let desired = this.phase;
+                    if (elapsed < COARSE_DUR) desired = 'COARSE_FEED';
+                    else if (elapsed < COARSE_DUR + FINE1_DUR) desired = 'FINE_FEED_1';
+                    else if (elapsed < COARSE_DUR + FINE1_DUR + FINE2_DUR) desired = 'FINE_FEED_2';
+                    else if (elapsed < COARSE_DUR + FINE1_DUR + FINE2_DUR + STABILIZE_DUR) desired = 'STABILIZING';
+                    else if (elapsed < CYCLE_DURATION) desired = 'DISCHARGING';
+                    else desired = 'END_CYCLE';
+
+                    if (desired !== this.phase) {
+                        if (desired === 'END_CYCLE') {
+                            // start discharge and schedule next cycle after DISCHARGE_DUR
+                            this.nextPhase('DISCHARGING');
+                            this.dischargeEnd = now + DISCHARGE_DUR * 1000;
+                        } else {
+                            this.nextPhase(desired);
+                        }
+                    }
+
+                    if (this.phase === 'DISCHARGING' && this.dischargeEnd && Date.now() >= this.dischargeEnd) {
+                        // finish discharge and begin next cycle
+                        if (this.isAutoMode) this.startNewCycle();
+                        else this.nextPhase('IDLE');
+                    }
+                }
+                requestAnimationFrame(() => this.animate());
+            }
+        }
+
+        window.onload = () => new WeighingSystem();
+    </script>
+</body>
+</html>

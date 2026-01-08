@@ -1,0 +1,413 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Online Checkweigher Simulation</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body {
+            background-color: #0f172a;
+            color: #f8fafc;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            margin: 0;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        }
+        canvas {
+            background: #1e293b;
+            border: 4px solid #334155;
+            border-radius: 15px;
+            box-shadow: 0 20px 50px rgba(0,0,0,0.5);
+            max-width: 95vw;
+        }
+        .display-panel {
+            background: #1e293b;
+            border-left: 5px solid #3b82f6;
+            padding: 20px;
+            border-radius: 10px;
+            width: 900px;
+            display: flex;
+            justify-content: space-around;
+            align-items: center;
+            margin-top: 20px;
+        }
+        .status-pill {
+            padding: 5px 15px;
+            border-radius: 20px;
+            font-weight: bold;
+            text-transform: uppercase;
+        }
+    </style>
+</head>
+<body>
+
+    <div class="text-center mb-6">
+        <h1 class="text-3xl font-bold text-blue-400">ระบบชั่งน้ำหนักสายพานอัตโนมัติ</h1>
+        <p class="text-slate-400 mt-2">Target: 25.000 - 25.110 kg | Accuracy: ±0.005 kg</p>
+    </div>
+
+    <canvas id="factoryCanvas"></canvas>
+
+    <div class="display-panel shadow-xl">
+        <div class="text-center">
+            <p class="text-xs text-slate-500 uppercase font-bold tracking-widest">Live Weight</p>
+            <p id="weightVal" class="text-4xl font-mono text-green-400">00.000 <span class="text-lg">kg</span></p>
+        </div>
+        <div class="h-12 w-px bg-slate-700"></div>
+        <div class="text-center">
+            <p class="text-xs text-slate-500 uppercase font-bold tracking-widest">Control Status</p>
+            <div id="statusIndicator" class="mt-2">
+                <span class="status-pill bg-slate-700 text-slate-300">Standing By</span>
+            </div>
+        </div>
+        <div class="h-12 w-px bg-slate-700"></div>
+        <div class="text-center">
+            <p class="text-xs text-slate-500 uppercase font-bold tracking-widest">Settings</p>
+            <div class="flex items-center gap-3 mt-2">
+                <span class="text-xs text-slate-400">Speed</span>
+                <input type="range" id="speedRange" min="1" max="5" step="0.5" value="2.5" class="accent-blue-500">
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('factoryCanvas');
+        const ctx = canvas.getContext('2d');
+        const weightDisplay = document.getElementById('weightVal');
+        const statusIndicator = document.getElementById('statusIndicator');
+        const speedRange = document.getElementById('speedRange');
+
+        canvas.width = 950;
+        canvas.height = 350;
+
+        const CONFIG = {
+            beltY: 220,
+            beltHeight: 15,
+            rollerRadius: 18,
+            targetMin: 25.000,
+            targetMax: 25.110,
+            accuracy: 0.005, // ±5g
+            sackWidth: 45,
+            sackHeight: 55,
+            weighingCenter: 475 // จุดกึ่งกลางของสายพานชั่ง (Stage 2)
+        };
+
+        // --- Class: Sack (กระสอบพลาสติก) ---
+        class Sack {
+            constructor(x, y) {
+                this.x = x;
+                this.y = y;
+                this.weight = 25.01 + (Math.random() * 0.2 - 0.1);
+                this.id = Math.floor(Math.random() * 1000);
+                this.status = 'IN_TRANSIT'; 
+                this.isMeasured = false; 
+                this.opacity = 0; 
+                this.yOffset = -20; 
+            }
+
+            update(speed) {
+                if (this.opacity < 1 && this.status !== 'REJECTED') {
+                    this.opacity += 0.1;
+                }
+
+                if (this.yOffset < 0 && this.status !== 'REJECTED') {
+                    this.yOffset += 2;
+                }
+
+                if (this.status === 'REJECTED') {
+                    this.yOffset += 5;
+                    this.opacity -= 0.02;
+                } else {
+                    this.x += speed;
+                }
+
+                if (this.x > 900) {
+                    this.opacity -= 0.01;
+                }
+            }
+
+            draw() {
+                ctx.save();
+                ctx.globalAlpha = Math.max(0, this.opacity);
+                ctx.translate(this.x, this.y + this.yOffset);
+
+                ctx.shadowBlur = 10;
+                ctx.shadowColor = 'rgba(0,0,0,0.3)';
+
+                let sackColor = '#e2e8f0'; 
+                if (this.status === 'PASSED') sackColor = '#22c55e';
+                if (this.status === 'REJECTED') sackColor = '#ef4444';
+                
+                ctx.fillStyle = sackColor;
+                ctx.beginPath();
+                ctx.roundRect(-CONFIG.sackWidth/2, -CONFIG.sackHeight, CONFIG.sackWidth, CONFIG.sackHeight, 5);
+                ctx.fill();
+                ctx.strokeStyle = '#94a3b8';
+                ctx.stroke();
+
+                ctx.fillStyle = '#cbd5e1';
+                ctx.beginPath();
+                ctx.ellipse(0, -CONFIG.sackHeight, CONFIG.sackWidth/2 + 2, 8, 0, 0, Math.PI * 2);
+                ctx.fill();
+
+                ctx.fillStyle = 'rgba(0,0,0,0.2)';
+                ctx.fillRect(-CONFIG.sackWidth/2 + 10, -CONFIG.sackHeight + 15, CONFIG.sackWidth - 20, 2);
+                ctx.fillRect(-CONFIG.sackWidth/2 + 10, -CONFIG.sackHeight + 20, CONFIG.sackWidth - 25, 2);
+
+                ctx.fillStyle = '#1e293b';
+                ctx.font = 'bold 9px Arial';
+                ctx.textAlign = 'center';
+                ctx.fillText(this.weight.toFixed(3), 0, -CONFIG.sackHeight/2);
+
+                ctx.restore();
+            }
+        }
+
+        // --- Class: Conveyor (ชุดสายพาน) ---
+        class Conveyor {
+            constructor(x, width, label, color) {
+                this.x = x;
+                this.width = width;
+                this.label = label;
+                this.color = color;
+                this.rollerAngle = 0;
+            }
+
+            update(speed) {
+                this.rollerAngle += speed * 0.1;
+            }
+
+            draw() {
+                ctx.fillStyle = '#334155';
+                ctx.fillRect(this.x, CONFIG.beltY, this.width, CONFIG.beltHeight);
+                
+                const spacing = 45;
+                const margin = 20;
+                const availableWidth = this.width - (margin * 2);
+                const rollerCount = Math.floor(availableWidth / spacing);
+                
+                for (let i = 0; i <= rollerCount; i++) {
+                    const rx = this.x + margin + (i * (availableWidth / rollerCount));
+                    this.drawRoller(rx, CONFIG.beltY + CONFIG.beltHeight + 10);
+                }
+
+                ctx.fillStyle = this.color;
+                ctx.font = 'bold 12px Arial';
+                ctx.textAlign = 'center';
+                ctx.fillText(this.label, this.x + this.width/2, CONFIG.beltY + 60);
+            }
+
+            drawRoller(x, y) {
+                ctx.save();
+                ctx.translate(x, y);
+                ctx.rotate(this.rollerAngle);
+                ctx.beginPath();
+                ctx.arc(0, 0, CONFIG.rollerRadius, 0, Math.PI * 2);
+                ctx.fillStyle = '#475569';
+                ctx.fill();
+                ctx.strokeStyle = '#1e293b';
+                ctx.lineWidth = 2;
+                ctx.stroke();
+                
+                ctx.beginPath();
+                ctx.moveTo(-CONFIG.rollerRadius + 5, 0);
+                ctx.lineTo(CONFIG.rollerRadius - 5, 0);
+                ctx.stroke();
+                ctx.restore();
+            }
+        }
+
+        // --- System Controller ---
+        class SystemController {
+            constructor() {
+                this.belts = [
+                    new Conveyor(50, 280, "STAGE 1: INFEED", "#3b82f6"),
+                    new Conveyor(340, 270, "STAGE 2: WEIGHING", "#eab308"),
+                    new Conveyor(620, 280, "STAGE 3: OUTFEED", "#22c55e")
+                ];
+                this.sacks = [];
+                this.spawnTimer = 0;
+                this.speed = parseFloat(speedRange.value);
+                this.currentDisplayWeight = 0;
+                this.currentDisplayColor = '#94a3b8'; // Default grey
+            }
+
+            update() {
+                this.speed = parseFloat(speedRange.value);
+                this.spawnTimer++;
+
+                if (this.spawnTimer > 120 / this.speed) {
+                    this.sacks.push(new Sack(45, CONFIG.beltY));
+                    this.spawnTimer = 0;
+                }
+
+                this.sacks.forEach((sack, index) => {
+                    sack.update(this.speed);
+
+                    if (sack.x > 380 && sack.x < 550 && !sack.isMeasured) {
+                        this.senseWeight(sack);
+                    }
+
+                    if (sack.x >= CONFIG.weighingCenter && sack.status === 'WAITING_RESULT') {
+                        this.processResult(sack);
+                    }
+
+                    if (sack.opacity <= 0) {
+                        this.sacks.splice(index, 1);
+                    }
+                });
+
+                this.belts.forEach(belt => belt.update(this.speed));
+            }
+
+            senseWeight(sack) {
+                const sensorError = (Math.random() * CONFIG.accuracy * 2) - CONFIG.accuracy;
+                sack.measuredValue = sack.weight + sensorError;
+                sack.status = 'WAITING_RESULT';
+                sack.isMeasured = true;
+
+                this.currentDisplayWeight = sack.measuredValue;
+                this.currentDisplayColor = '#eab308'; // Waiting color
+
+                weightDisplay.textContent = sack.measuredValue.toFixed(3);
+                weightDisplay.classList.remove('text-green-400', 'text-red-400', 'text-yellow-400');
+                weightDisplay.classList.add('text-yellow-400');
+            }
+
+            processResult(sack) {
+                const reading = sack.measuredValue;
+                weightDisplay.classList.remove('text-yellow-400');
+
+                if (reading < CONFIG.targetMin || reading > CONFIG.targetMax) {
+                    sack.status = 'REJECTED';
+                    this.currentDisplayColor = '#ef4444'; // Red
+                    this.updateStatusUI("REJECT", "bg-red-500 text-white");
+                    weightDisplay.classList.add('text-red-400');
+                } else {
+                    sack.status = 'PASSED';
+                    this.currentDisplayColor = '#22c55e'; // Green
+                    this.updateStatusUI("PASS: OK", "bg-green-500 text-white");
+                    weightDisplay.classList.add('text-green-400');
+                }
+            }
+
+            updateStatusUI(text, classes) {
+                statusIndicator.innerHTML = `<span class="status-pill ${classes}">${text}</span>`;
+            }
+
+            drawBaggingMachine() {
+                const machineX = 10;
+                const machineY = 40;
+                const machineW = 70;
+                const machineH = 180;
+
+                ctx.save();
+                ctx.fillStyle = '#475569';
+                ctx.fillRect(machineX, machineY, machineW, machineH);
+                ctx.strokeStyle = '#1e293b';
+                ctx.lineWidth = 3;
+                ctx.strokeRect(machineX, machineY, machineW, machineH);
+
+                ctx.fillStyle = '#64748b';
+                ctx.beginPath();
+                ctx.moveTo(machineX - 10, machineY);
+                ctx.lineTo(machineX + machineW + 10, machineY);
+                ctx.lineTo(machineX + machineW, machineY + 40);
+                ctx.lineTo(machineX, machineY + 40);
+                ctx.closePath();
+                ctx.fill();
+                ctx.stroke();
+
+                ctx.fillStyle = '#94a3b8';
+                ctx.fillRect(machineX + 20, machineY + machineH - 20, machineW - 40, 30);
+                ctx.strokeRect(machineX + 20, machineY + machineH - 20, machineW - 40, 30);
+
+                ctx.fillStyle = '#f8fafc';
+                ctx.font = 'bold 11px Arial';
+                ctx.textAlign = 'center';
+                const textCenterX = machineX + machineW/2;
+                const textCenterY = machineY + machineH/2;
+                ctx.fillText("BAGGING", textCenterX, textCenterY - 5);
+                ctx.fillText("MACHINE", textCenterX, textCenterY + 10);
+                ctx.restore();
+            }
+
+            drawDigitalDisplay() {
+                // วางไว้บนกรอบเส้นประสีเหลือง (Weighing Area) ห่างกันเล็กน้อย
+                const displayW = 120;
+                const displayH = 45;
+                const displayX = 465 - (displayW / 2);
+                const displayY = CONFIG.beltY - 130; // เหนือกรอบเส้นประ
+
+                ctx.save();
+                // Shadow
+                ctx.shadowBlur = 15;
+                ctx.shadowColor = 'rgba(0,0,0,0.5)';
+                
+                // Black Background
+                ctx.fillStyle = '#000000';
+                ctx.beginPath();
+                ctx.roundRect(displayX, displayY, displayW, displayH, 5);
+                ctx.fill();
+                
+                // Border
+                ctx.strokeStyle = '#475569';
+                ctx.lineWidth = 2;
+                ctx.stroke();
+
+                // Text
+                ctx.shadowBlur = 0;
+                ctx.fillStyle = this.currentDisplayColor;
+                ctx.font = 'bold 22px Courier New';
+                ctx.textAlign = 'center';
+                ctx.fillText(this.currentDisplayWeight.toFixed(3), displayX + displayW/2, displayY + 30);
+                
+                // Unit Label
+                ctx.font = 'bold 10px Arial';
+                ctx.fillText("kg", displayX + displayW - 15, displayY + 30);
+                
+                ctx.restore();
+            }
+
+            draw() {
+                ctx.clearRect(0, 0, canvas.width, canvas.height);
+                
+                this.drawBaggingMachine();
+                this.belts.forEach(belt => belt.draw());
+
+                // Weighing Area Marker (Yellow Dash)
+                ctx.strokeStyle = 'rgba(234, 179, 8, 0.4)';
+                ctx.lineWidth = 2;
+                ctx.setLineDash([5, 5]);
+                ctx.strokeRect(380, CONFIG.beltY - 70, 170, 100);
+                
+                // Draw Digital Display above the weighing marker
+                this.drawDigitalDisplay();
+                
+                ctx.strokeStyle = 'rgba(239, 68, 68, 0.5)';
+                ctx.beginPath();
+                ctx.moveTo(CONFIG.weighingCenter, CONFIG.beltY - 70);
+                ctx.lineTo(CONFIG.weighingCenter, CONFIG.beltY + 30);
+                ctx.stroke();
+                
+                ctx.setLineDash([]);
+                this.sacks.forEach(sack => sack.draw());
+            }
+        }
+
+        const controller = new SystemController();
+
+        function animate() {
+            controller.update();
+            controller.draw();
+            requestAnimationFrame(animate);
+        }
+
+        window.onload = animate;
+    </script>
+</body>
+</html>

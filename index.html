@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>PLBG — Checkweigher Simulation</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="css/styles.css">
+    
+</head>
+<body class="bg-slate-900 text-slate-50 min-h-screen flex flex-col">
+    <header class="bg-slate-800/60 backdrop-blur sticky top-0 z-30">
+        <nav class="container mx-auto px-4 py-3 flex items-center justify-between">
+            <div class="flex items-center gap-3">
+                <a href="#" class="text-xl font-bold text-blue-400">PLBG</a>
+                <span class="text-slate-400">Online Checkweigher</span>
+            </div>
+            <ul class="hidden md:flex items-center gap-6 text-slate-300" style="display:none;">
+                <li><a href="#" class="hover:text-white">Home</a></li>
+                <li><a href="#" class="hover:text-white">Simulation</a></li>
+                <li><a href="#" class="hover:text-white">Docs</a></li>
+                <li><a href="#" class="hover:text-white">About</a></li>
+            </ul>
+            <div class="md:hidden text-slate-300">☰</div>
+        </nav>
+    </header>
+
+    <main class="container mx-auto px-4 py-8 flex-1">
+            <div class="text-center mb-6">
+            <h1 class="text-3xl font-bold text-blue-400">ระบบชั่งน้ำหนักสายพานอัตโนมัติ</h1>
+            <p id="targetInfo" class="text-slate-400 mt-2">Target: 25.000 - 25.110 kg | Bagging: ±0.015 kg | Weighing tolerance: ±0.005 kg</p>
+        </div>
+
+        <div class="flex flex-col md:flex-row items-start gap-4 md:gap-0">
+            
+            <div class="w-full md:w-[calc(100%_-_440px)]">
+                <!-- Machine A -->
+                <section id="machineA" class="relative flex flex-col items-center gap-6" aria-label="Machine A">
+                    <div class="machine-wrap relative">
+                                   <div id="orderPanel" class="order-panel absolute top-4 h-14 p-2 bg-slate-800/70 border border-slate-700 rounded text-sm text-slate-200 flex items-center justify-start gap-3 z-20" style="right:12px; left:auto; max-width:calc(100% - 220px); width:auto;">
+                            <div class="left-group flex items-center gap-2">
+                                <div id="orderTitle" class="text-xs text-slate-400 uppercase tracking-wider mobile-hidden hidden md:block">Bagout Order</div>
+                                <div class="text-sm text-slate-100 font-semibold mobile-hidden hidden md:block" id="orderType">No order</div>
+                                <div class="text-xs text-slate-400 truncate" id="orderMeta">—</div>
+                                <button id="orderExpandBtn" class="ml-2 text-xs text-slate-300 md:hidden" aria-label="Show order details">⋯</button>
+                            </div>
+                            <div class="w-40 px-3">
+                                <div class="progress-bar" aria-hidden>
+                                    <i id="progressBarFill" style="width:0%"></i>
+                                </div>
+                            </div>
+                            <div class="flex items-center gap-4 text-xs text-slate-200 order-right">
+                                <div class="text-right">
+                                    <div class="text-[11px] text-slate-400">Produced</div>
+                                    <div id="producedVal" class="font-mono">0 / 0</div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <canvas id="factoryCanvas" data-shape="cylinder" class="shadow-canvas"></canvas>
+
+                    <div class="display-panel relative shadow-xl">
+                        <div class="text-center">
+                            <p class="text-xs text-slate-500 uppercase font-bold tracking-widest">Live Weight</p>
+                            <p id="weightVal" class="text-4xl font-mono text-green-400">00.000 <span class="text-lg">kg</span></p>
+                        </div>
+                        <div class="text-center mt-3">
+                            <p class="text-xs text-slate-500 uppercase font-bold tracking-widest">Bag Shape</p>
+                            <div class="flex items-center gap-3 mt-2 justify-center">
+                                <label for="smallBagToggle" class="text-xs text-slate-400">Small Bag</label>
+                                <input type="checkbox" id="smallBagToggle" class="h-4 w-4 accent-blue-500" title="Use small bag" aria-label="Use small bag">
+                            </div>
+                        </div>
+                        <div class="h-12 w-px bg-slate-700"></div>
+                        <div class="text-center">
+                            <p class="text-xs text-slate-500 uppercase font-bold tracking-widest">Control Status</p>
+                            <div class="mt-2 space-y-2">
+                                <div class="flex flex-col items-center">
+                                    <span class="text-[10px] text-slate-400 uppercase">Metal Detector</span>
+                                    <div id="statusMetal" class="mt-1">
+                                        <span class="status-pill bg-slate-700 text-slate-300">Standby</span>
+                                    </div>
+                                </div>
+                                <div class="flex flex-col items-center">
+                                    <span class="text-[10px] text-slate-400 uppercase">Weighing</span>
+                                    <div id="statusWeighing" class="mt-1">
+                                        <span class="status-pill bg-slate-700 text-slate-300">Standing By</span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="h-12 w-px bg-slate-700"></div>
+                        <div class="text-center">
+                            <p class="text-xs text-slate-500 uppercase font-bold tracking-widest">Settings</p>
+                            <div class="flex items-center gap-3 mt-2">
+                                <label for="speedRange" class="text-xs text-slate-400">Speed</label>
+                                <input type="range" id="speedRange" min="1" max="5" step="0.5" value="1" class="accent-blue-500" title="Conveyor speed" aria-label="Conveyor speed">
+                            </div>
+                            
+                        </div>
+                    </div>
+                    </div>
+                </section>
+
+                <!-- Machine B (copy) -->
+                <section id="machineB" class="relative flex flex-col items-center gap-6 mt-8" aria-label="Machine B">
+                    <div class="machine-wrap relative">
+                        <div id="orderPanel2" class="order-panel absolute top-4 h-14 p-2 bg-slate-800/70 border border-slate-700 rounded text-sm text-slate-200 flex items-center justify-start gap-3 z-20" style="right:12px; left:auto; max-width:calc(100% - 220px); width:auto;">
+                            <div class="left-group flex items-center gap-2">
+                                <div id="orderTitle2" class="text-xs text-slate-400 uppercase tracking-wider mobile-hidden hidden md:block">Bagout Order</div>
+                                <div class="text-sm text-slate-100 font-semibold mobile-hidden hidden md:block" id="orderType2">No order</div>
+                                <div class="text-xs text-slate-400 truncate" id="orderMeta2">—</div>
+                                <button id="orderExpandBtn2" class="ml-2 text-xs text-slate-300 md:hidden" aria-label="Show order details">⋯</button>
+                            </div>
+                            <div class="w-40 px-3">
+                                <div class="progress-bar" aria-hidden>
+                                    <i id="progressBarFill2" style="width:0%"></i>
+                                </div>
+                            </div>
+                            <div class="flex items-center gap-4 text-xs text-slate-200 order-right">
+                                <div class="text-right">
+                                    <div class="text-[11px] text-slate-400">Produced</div>
+                                    <div id="producedVal2" class="font-mono">0 / 0</div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <canvas id="factoryCanvas2" data-shape="box" class="shadow-canvas"></canvas>
+
+                        <div class="display-panel shadow-xl">
+                            <div class="text-center">
+                                <p class="text-xs text-slate-500 uppercase font-bold tracking-widest">Live Weight</p>
+                                <p id="weightVal2" class="text-4xl font-mono text-green-400">00.000 <span class="text-lg">kg</span></p>
+                            </div>
+                            <div class="text-center mt-3">
+                                <p class="text-xs text-slate-500 uppercase font-bold tracking-widest">Bag Shape</p>
+                                <div class="flex items-center gap-3 mt-2 justify-center">
+                                    <label for="smallBagToggle2" class="text-xs text-slate-400">Small Bag</label>
+                                    <input type="checkbox" id="smallBagToggle2" class="h-4 w-4 accent-blue-500" title="Use small bag for machine B" aria-label="Use small bag machine B">
+                                </div>
+                            </div>
+                            <div class="h-12 w-px bg-slate-700"></div>
+                            <div class="text-center">
+                                <p class="text-xs text-slate-500 uppercase font-bold tracking-widest">Control Status</p>
+                                <div class="mt-2 space-y-2">
+                                    <div class="flex flex-col items-center">
+                                        <span class="text-[10px] text-slate-400 uppercase">Metal Detector</span>
+                                        <div id="statusMetal2" class="mt-1">
+                                            <span class="status-pill bg-slate-700 text-slate-300">Standby</span>
+                                        </div>
+                                    </div>
+                                    <div class="flex flex-col items-center">
+                                        <span class="text-[10px] text-slate-400 uppercase">Weighing</span>
+                                        <div id="statusWeighing2" class="mt-1">
+                                            <span class="status-pill bg-slate-700 text-slate-300">Standing By</span>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="h-12 w-px bg-slate-700"></div>
+                            <div class="text-center">
+                                <p class="text-xs text-slate-500 uppercase font-bold tracking-widest">Settings</p>
+                                <div class="flex items-center gap-3 mt-2">
+                                    <label for="speedRange2" class="text-xs text-slate-400">Speed</label>
+                                    <input type="range" id="speedRange2" min="1" max="5" step="0.5" value="1" class="accent-blue-500" title="Conveyor speed machine B" aria-label="Conveyor speed machine B">
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Per-machine bag feed for Machine B (moved to aside) -->
+                    </div>
+                </section>
+            </div>
+
+            <!-- Bag feed column (right) -->
+            <aside class="w-full md:w-[420px] mt-4 md:mt-0">
+                <div id="bagFeed" class="feed-container w-full h-auto md:h-[520px] bg-slate-800/60 p-2 rounded shadow-inner overflow-hidden">
+                    <div class="text-xs text-slate-400 uppercase font-bold tracking-widest mb-2">Bag Feed (Real-time)</div>
+                    <div class="feed-header grid grid-cols-4 gap-2 text-xs text-slate-400/90 uppercase tracking-wider mb-2 px-2">
+                        <div class="">Time</div>
+                        <div class="text-right">Weight</div>
+                        <div class="text-center">Metal</div>
+                        <div class="text-right">Status</div>
+                    </div>
+                    <ul id="bagFeedList" class="feed-list gap-2 h-auto md:h-[430px] overflow-y-auto pr-1 px-1"></ul>
+                </div>
+                <!-- Machine B feed moved here to match layout -->
+                <div id="bagFeed2" class="feed-container w-full h-auto md:h-[220px] bg-slate-800/60 p-2 rounded shadow-inner overflow-hidden mt-6">
+                    <div class="text-xs text-slate-400 uppercase font-bold tracking-widest mb-2">Bag Feed (Machine B)</div>
+                    <div class="feed-header grid grid-cols-4 gap-2 text-xs text-slate-400/90 uppercase tracking-wider mb-2 px-2">
+                        <div class="">Time</div>
+                        <div class="text-right">Weight</div>
+                        <div class="text-center">Metal</div>
+                        <div class="text-right">Status</div>
+                    </div>
+                    <ul id="bagFeedList2" class="feed-list gap-2 h-auto md:h-[150px] overflow-y-auto pr-1 px-1"></ul>
+                </div>
+            </aside>
+        </div>
+    </main>
+
+    <footer class="bg-slate-800/60">
+        <div class="container mx-auto px-4 py-4 text-slate-400 text-sm">
+            © 2026 PLBG — Simulation demo. Built with Tailwind.
+        </div>
+    </footer>
+
+    <div id="detectorTooltip" class="hidden"></div>
+
+    <script type="module" src="js/main.js"></script>
+</body>
+</html>
