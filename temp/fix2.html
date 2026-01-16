@@ -1,0 +1,403 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ระบบจำลองเม็ดพลาสติกในถังพัก (Fixed Physics — Pile 50%)</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body { background-color: #1a1a1a; color: white; overflow: hidden; }
+        canvas { display: block; margin: 0 auto; background: #000; touch-action: none; }
+        .controls { position: absolute; top: 10px; left: 10px; z-index: 10; background: rgba(0,0,0,0.7); padding: 15px; border-radius: 8px; }
+    </style>
+</head>
+<body>
+
+<!-- Controls removed — using constants in `config` now -->
+
+<canvas id="simCanvas"></canvas>
+
+<script>
+/**
+ * fix2: based on fix.html
+ * - reduce particle radius
+ * - increase sub-steps
+ * - bias spawns toward hopper center
+ * - compute a pileCapY = top of bottom hopper + 50% of lower hopper height
+ * - clamp particle positions so pile can grow up to pileCapY
+ */
+
+const canvas = document.getElementById('simCanvas');
+const ctx = canvas.getContext('2d');
+// Controls removed — values come from `config` below
+
+let particles = [];
+let width, height;
+let hopperLines = [];
+let pileCapY = 0; // top-most allowed y for pile (smaller y = higher)
+let spawnTarget = 0;
+let spawned = 0;
+let isDischarging = false;
+let startDischargeTimer = null;
+const settleBeforeDischarge = 800; // ms to wait after spawn complete before discharging
+const restartAfterClear = 1000; // ms to wait after all particles cleared
+let restartTimer = null;
+let cycleCount = 0;
+let cycleStart = null;
+let lastCycleTime = null;
+let spawnCompleteAt = null;
+const maxWaitBeforeForceDischarge = 5000; // ms fallback if pile never reaches cap
+// Hopper geometry cached for runtime checks
+let hopperCenterX = 0;
+let hopperTopY = 0;
+let hopperMidY = 0;
+let hopperBottomY = 0;
+let hopperTopHalf = 0;
+let hopperBottomHalf = 0;
+
+// กำหนดคุณสมบัติฟิสิกส์
+let config = {
+    gravity: 0.60,
+    friction: 0.10,
+    restitution: 0.05, // very low bounce so pile is stable
+    radius: 4, // smaller particles to allow denser stacking
+    subSteps: 10 // increase sub-steps for accuracy
+};
+// Simulation constants (set desired spawn count here)
+config.spawnDesired = 5000; // desired total particles to form the pile
+config.simCap = 2000;      // cap used to keep simulation interactive
+
+class Particle {
+    constructor(x, y) {
+        this.x = x;
+        this.y = y;
+        this.oldX = x - (Math.random() - 0.5) * 2;
+        this.oldY = y;
+        this.r = config.radius + (Math.random() * 1.2); // small size variance
+        this.color = `hsl(${200 + Math.random() * 40}, 70%, 60%)`;
+    }
+
+    update() {
+        // compute per-step damping so total damping per frame equals config.friction
+        const steps = Math.max(1, config.subSteps);
+        const totalMul = Math.max(0, 1 - config.friction);
+        const perStepMul = Math.pow(totalMul, 1 / steps);
+        let vx = (this.x - this.oldX) * perStepMul;
+        let vy = (this.y - this.oldY) * perStepMul;
+
+        this.oldX = this.x;
+        this.oldY = this.y;
+
+        this.x += vx;
+        this.y += vy + (config.gravity / steps);
+    }
+
+    draw() {
+        ctx.beginPath();
+        ctx.arc(this.x, this.y, this.r, 0, Math.PI * 2);
+        ctx.fillStyle = this.color;
+        ctx.fill();
+        ctx.strokeStyle = 'rgba(255,255,255,0.06)';
+        ctx.stroke();
+    }
+}
+
+function resize() {
+    width = window.innerWidth;
+    height = window.innerHeight;
+    canvas.width = width;
+    canvas.height = height;
+
+    const centerX = width / 2;
+    const hTop = height * 0.18;
+    const hMid = height * 0.56;
+    const hBottom = height * 0.9;
+    const wTop = 320;
+    const wBottom = 60;
+
+    // นิยามเส้นขอบของ Hopper (พิกัด x1, y1, x2, y2)
+    hopperLines = [
+        { x1: centerX - wTop, y1: hTop, x2: centerX - wTop, y2: hMid },
+        { x1: centerX - wTop, y1: hMid, x2: centerX - wBottom, y2: hBottom },
+        { x1: centerX + wTop, y1: hTop, x2: centerX + wTop, y2: hMid },
+        { x1: centerX + wTop, y1: hMid, x2: centerX + wBottom, y2: hBottom },
+        { x1: centerX - wBottom, y1: hBottom, x2: centerX + wBottom, y2: hBottom }
+    ];
+
+    // compute pile cap: allow pile to grow up to 50% of the lower hopper height
+    const lowerHeight = hBottom - hMid;
+    pileCapY = hMid + lowerHeight * 0.5; // top-most allowed y (smaller y = higher)
+    // store hopper geometry for runtime clamping
+    hopperCenterX = centerX;
+    hopperTopY = hTop;
+    hopperMidY = hMid;
+    hopperBottomY = hBottom;
+    hopperTopHalf = wTop;
+    hopperBottomHalf = wBottom;
+}
+
+function initParticles() {
+    // Reset particle array and prepare spawn target so particles appear gradually
+    particles = [];
+    spawned = 0;
+    // start timing this cycle
+    cycleStart = Date.now();
+    // Cap the simulation target for performance (user slider may request very large numbers)
+    // Use constants from config instead of UI sliders
+    const rawCount = Math.max(0, parseInt(config.spawnDesired) || 0);
+    const SIM_CAP = Math.max(1, parseInt(config.simCap) || 2000);
+    spawnTarget = Math.min(rawCount, SIM_CAP);
+    spawnCompleteAt = null;
+
+    // Adaptive sub-steps: keep work = particles * subSteps bounded for performance
+    // Use spawnTarget as the anticipated particle count for tuning
+    const MAX_WORK = 25000;
+    const target = Math.max(1, Math.floor(MAX_WORK / Math.max(1, spawnTarget)));
+    config.subSteps = Math.max(1, Math.min(12, target));
+    console.debug(`initParticles: spawnTarget=${spawnTarget}, subSteps=${config.subSteps}`);
+}
+
+function pileReached() {
+    if (particles.length === 0) return false;
+    // find minimum y among particles inside bottom hopper region
+    let minY = Infinity;
+    for (let p of particles) {
+        // consider only particles that are within hopper horizontal extents at their y
+        const tRaw = (p.y - hopperTopY) / (hopperBottomY - hopperTopY || 1);
+        const t = Math.max(0, Math.min(1, tRaw));
+        const halfAtY = hopperTopHalf + (hopperBottomHalf - hopperTopHalf) * t;
+        const leftWall = hopperCenterX - halfAtY + p.r;
+        const rightWall = hopperCenterX + halfAtY - p.r;
+        if (p.x >= leftWall && p.x <= rightWall) {
+            if (p.y < minY) minY = p.y;
+        }
+    }
+    if (minY === Infinity) return false;
+    // pile reached when some particle is at or above pileCapY (smaller y)
+    return minY <= (pileCapY + 1);
+}
+
+function beginDischarge() {
+    if (isDischarging) return;
+    isDischarging = true;
+    startDischargeTimer = null;
+    // Stop further spawning
+    spawnTarget = 0;
+
+    // Give each particle a downward shove so they fall out quickly
+    for (let p of particles) {
+        // set oldY so the verlet velocity produces a downward push
+        const push = 30 + Math.random() * 40;
+        p.oldY = p.y - push;
+        // small horizontal spread so they don't stack on exit
+        p.oldX = p.x + (Math.random() - 0.5) * 12;
+    }
+}
+
+// Spawn a small batch of particles per frame until we hit spawnTarget
+function spawnStep() {
+    if (isDischarging) return;
+    if (spawned >= spawnTarget) return;
+    const remaining = spawnTarget - spawned;
+    // Increase batch size for heavier pour; make batch a fraction of spawnTarget
+    const maxBatchByTarget = Math.max(200, Math.floor((spawnTarget || 200) * 0.03)); // ~3% of target
+    const batch = Math.min(Math.max(16, maxBatchByTarget), remaining, 1200);
+    const centerX = hopperCenterX || (width / 2);
+    // widen spawn spread to match top hopper width so more particles enter
+    const spreadX = Math.max(120, hopperTopHalf * 1.4);
+    // spawn from a taller vertical band so particles appear to pour from a big opening
+    const spawnYRange = Math.max(height * 0.45, 220);
+    for (let i = 0; i < batch && spawned < spawnTarget; i++, spawned++) {
+        particles.push(new Particle(
+            centerX + (Math.random() - 0.5) * spreadX,
+            -10 - Math.random() * spawnYRange
+        ));
+    }
+}
+
+function closestPointOnLine(px, py, x1, y1, x2, y2) {
+    const l2 = Math.pow(x2 - x1, 2) + Math.pow(y2 - y1, 2);
+    if (l2 === 0) return { x: x1, y: y1 };
+    let t = ((px - x1) * (x2 - x1) + (py - y1) * (y2 - y1)) / l2;
+    t = Math.max(0, Math.min(1, t));
+    return { x: x1 + t * (x2 - x1), y: y1 + t * (y2 - y1) };
+}
+
+function resolveCollisions() {
+    // Particle vs Wall
+    for (let p of particles) {
+        for (let line of hopperLines) {
+            const closest = closestPointOnLine(p.x, p.y, line.x1, line.y1, line.x2, line.y2);
+            const dx = p.x - closest.x;
+            const dy = p.y - closest.y;
+            const dist = Math.sqrt(dx * dx + dy * dy) || 0.0001;
+
+            if (dist < p.r) {
+                const nx = dx / dist;
+                const ny = dy / dist;
+                const overlap = p.r - dist;
+
+                // immediate position correction
+                p.x += nx * overlap;
+                p.y += ny * overlap;
+
+                // velocity correction (inelastic)
+                let vx = p.x - p.oldX;
+                let vy = p.y - p.oldY;
+                const dot = vx * nx + vy * ny;
+                if (dot < 0) {
+                    p.oldX = p.x - (vx - 2 * dot * nx) * config.restitution;
+                    p.oldY = p.y - (vy - 2 * dot * ny) * config.restitution;
+                }
+            }
+        }
+        // After wall handling, ensure particle X is inside the hopper interior
+        // Use clamped interpolation so even particles slightly below the bottom
+        // or above the top are projected to the nearest wall extent.
+        if (typeof hopperTopY === 'number') {
+            // don't constrain during intentional discharge (allow fall-out)
+            if (!isDischarging) {
+                const tRaw = (p.y - hopperTopY) / (hopperBottomY - hopperTopY || 1);
+                const t = Math.max(0, Math.min(1, tRaw));
+                const halfAtY = hopperTopHalf + (hopperBottomHalf - hopperTopHalf) * t;
+                const leftWall = hopperCenterX - halfAtY + p.r;
+                const rightWall = hopperCenterX + halfAtY - p.r;
+                if (p.x < leftWall) {
+                    p.x = leftWall;
+                    p.oldX = p.x; // zero horizontal velocity next step
+                } else if (p.x > rightWall) {
+                    p.x = rightWall;
+                    p.oldX = p.x;
+                }
+            }
+        }
+    }
+
+    // Particle vs Particle (brute force)
+    for (let i = 0; i < particles.length; i++) {
+        for (let j = i + 1; j < particles.length; j++) {
+            const p1 = particles[i];
+            const p2 = particles[j];
+            const dx = p2.x - p1.x;
+            const dy = p2.y - p1.y;
+            const minDist = p1.r + p2.r;
+            const distSq = dx * dx + dy * dy;
+
+            if (distSq < minDist * minDist) {
+                const dist = Math.sqrt(distSq) || 0.0001;
+                const nx = dx / dist;
+                const ny = dy / dist;
+                const overlap = (minDist - dist) / 2;
+
+                // position correction
+                p1.x -= nx * overlap;
+                p1.y -= ny * overlap;
+                p2.x += nx * overlap;
+                p2.y += ny * overlap;
+
+                // Clamp so particles don't correct above pileCapY
+                if (p1.y < pileCapY) p1.y = pileCapY;
+                if (p2.y < pileCapY) p2.y = pileCapY;
+            }
+        }
+    }
+}
+
+function animate() {
+    ctx.clearRect(0, 0, width, height);
+
+    // draw hopper
+    ctx.beginPath();
+    ctx.lineWidth = 4;
+    ctx.strokeStyle = '#444';
+    hopperLines.forEach(l => { ctx.moveTo(l.x1, l.y1); ctx.lineTo(l.x2, l.y2); });
+    ctx.stroke();
+
+    // spawn new particles gradually for visible pouring
+    spawnStep();
+
+    // physics sub-stepping
+    for (let s = 0; s < config.subSteps; s++) {
+        for (let p of particles) p.update();
+        resolveCollisions();
+    }
+
+    // draw particles
+    for (let p of particles) p.draw();
+
+    // If we've finished spawning, mark completion time
+    if (spawned >= spawnTarget && spawnTarget > 0 && spawnCompleteAt === null) {
+        spawnCompleteAt = Date.now();
+    }
+
+    // If spawning finished, delay discharge until pile reaches pileCapY or fallback
+    if (!isDischarging && spawnCompleteAt !== null && startDischargeTimer === null) {
+        if (pileReached() || (Date.now() - spawnCompleteAt) > maxWaitBeforeForceDischarge) {
+            startDischargeTimer = setTimeout(() => beginDischarge(), settleBeforeDischarge);
+        }
+    }
+
+    // During discharge, remove particles that fall past bottom
+    if (isDischarging) {
+        const bottomY = height + 60;
+        // filter out cleared particles — only remove those that are clearly
+        // beyond the bottom and moving downward (avoid accidental removal)
+        particles = particles.filter(p => {
+            if (p.y <= bottomY) return true;
+            const vy = p.y - p.oldY; // approximate per-frame downward motion
+            // remove only when particle is below bottom and moving down fast enough
+            return !(p.y > bottomY && vy > 2);
+        });
+
+        // when cleared, schedule restart once
+        if (particles.length === 0 && restartTimer === null) {
+            // record cycle time
+            if (cycleStart !== null) {
+                lastCycleTime = Date.now() - cycleStart;
+                cycleCount++;
+            }
+            restartTimer = setTimeout(() => {
+                restartTimer = null;
+                isDischarging = false;
+                // restart process
+                resize();
+                initParticles();
+            }, restartAfterClear);
+        }
+    }
+
+    // draw cycle overlay
+    if (typeof lastCycleTime === 'number' || cycleStart !== null) {
+        const pad = 8;
+        const txt1 = `Cycle: ${cycleCount}`;
+        const txt2 = lastCycleTime ? `Last: ${(lastCycleTime/1000).toFixed(2)}s` : `Running...`;
+        ctx.font = '14px ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto';
+        const w1 = ctx.measureText(txt1).width;
+        const w2 = ctx.measureText(txt2).width;
+        const bw = Math.max(w1, w2) + pad * 2;
+        const bh = 36;
+        const x = 12;
+        const y = 12;
+        ctx.fillStyle = 'rgba(0,0,0,0.45)';
+        ctx.fillRect(x, y, bw, bh);
+        ctx.fillStyle = '#fff';
+        ctx.fillText(txt1, x + pad, y + 14);
+        ctx.fillStyle = '#9ae6b4';
+        ctx.fillText(txt2, x + pad, y + 30);
+    }
+
+    requestAnimationFrame(animate);
+}
+
+// No UI events — constants in `config` control behavior
+
+window.addEventListener('resize', () => { resize(); initParticles(); });
+
+// Start
+resize();
+initParticles();
+animate();
+
+</script>
+</body>
+</html>

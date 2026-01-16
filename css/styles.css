@@ -34,6 +34,100 @@ body{
     margin: 0 auto;
     position: relative;
 }
+/* If a hopper preview is placed before the order panel, keep the panel in the document flow
+   so it doesn't overlap the preview. The selector targets the order-panel immediately
+   following a .hopper-preview inside .machine-wrap. */
+.machine-wrap > .hopper-preview + .order-panel,
+.machine-wrap > .hopper-preview + .order-panel.order-panel-anchored {
+    position: relative !important;
+    top: auto !important;
+    left: auto !important;
+    right: auto !important;
+    margin-top: 8px;
+    z-index: 20;
+}
+
+/* Ensure Machine B's order panel remains anchored/absolute (restore original behavior) */
+#orderPanel2.order-panel-anchored {
+    position: absolute !important;
+    top: 1rem !important;
+    right: 12px !important;
+    left: auto !important;
+    z-index: 20 !important;
+}
+
+/* When a package is a special size (25 or 750), show Machine B's order panel
+   in the top-left corner of its machine area for emphasis. */
+#orderPanel2.order-panel-anchored.top-left-package {
+    left: 12px !important;
+    right: auto !important;
+    top: 1rem !important;
+    width: 380px !important;
+    max-width: calc(100% - 24px) !important;
+    z-index: 30 !important;
+    transform: none !important;
+}
+
+@media (max-width: 1100px) {
+    /* revert to in-flow on narrower layouts to avoid overlap */
+    #orderPanel2.order-panel-anchored.top-left-package {
+        position: relative !important;
+        top: auto !important;
+        left: auto !important;
+        right: auto !important;
+        width: 100% !important;
+        margin: 6px 0 !important;
+        z-index: 10 !important;
+    }
+}
+
+/* Machine A order panel restored. */
+
+#orderPanel.order-panel-anchored {
+    position: absolute !important;
+    /* place under the preview (preview height + small gap) */
+    top: calc(var(--hopper-preview-h) + 12px) !important;
+    right: 12px !important;
+    left: auto !important;
+    z-index: 25 !important;
+    /* extend width toward the left while keeping right edge fixed */
+    width: calc(100% - 160px) !important; /* leave ~160px space on the right */
+    max-width: none !important;
+}
+
+@media (max-width: 980px) {
+    .machine-wrap > .hopper-preview { --hopper-preview-h: 180px; }
+    #orderPanel.order-panel-anchored { top: calc(var(--hopper-preview-h) + 8px) !important; width: calc(100% - 48px) !important; }
+}
+
+/* Desktop: allow order-panel to be wider so meta doesn't wrap */
+@media (min-width: 981px) {
+    /* Apply same anchored sizing to both machine order panels */
+    .order-panel.order-panel-anchored {
+        max-width: calc(100% - 48px) !important;
+        padding-right: 20px !important;
+    }
+    /* keep meta on one line if space allows */
+    .order-panel.order-panel-anchored #orderMeta,
+    .order-panel.order-panel-anchored #orderMeta2 {
+        /* Allow the meta block to wrap on desktop so full details are visible.
+           Keep an upper max-width to preserve layout with produced/progress columns. */
+        white-space: normal !important;
+        overflow-wrap: anywhere !important;
+        overflow: visible !important;
+        text-overflow: clip !important;
+        max-width: calc(100% - 140px) !important; /* slightly more room for meta text */
+    }
+}
+/* Keep the logical preview height smaller so the order panel stays in its intended place
+    while allowing the iframe itself to be taller to avoid internal scrollbars. */
+.machine-wrap > .hopper-preview { --hopper-preview-h: 220px; }
+
+/* Hopper preview iframe styles */
+.hopper-preview{ width:100%; max-width:950px; margin: 0 auto 12px; }
+.hopper-preview .preview-header{ color: #94a3b8; }
+.hopper-iframe{ width:100%; height:720px; border:8px solid #334155; border-radius:12px; display:block; box-shadow: 0 10px 30px rgba(0,0,0,0.5); background:#0b1220; }
+@media (max-width: 980px){ .hopper-iframe{ height:640px; } .hopper-preview{ max-width:95% !important; } }
 .status-pill{
     padding: 5px 15px;
     border-radius: 20px;
@@ -65,6 +159,8 @@ body{
         transform: none !important;
         z-index: 10 !important;
     }
+    /* hide progress and produced count on narrower layouts to save horizontal space */
+    .order-panel .w-40, .order-panel .order-right { display: none !important; }
 }
 
 /* Fix for iPad / small tablets: prevent order-panel overflow and make display-panel box-size friendly */
@@ -119,14 +215,36 @@ body{
 .hidden { display: none; }
 
 /* Feed header underline and spacing */
-.feed-header{ border-bottom: 1px solid rgba(148,163,184,0.06); padding-bottom:6px; }
+.feed-header{
+    display: grid;
+    grid-template-columns: 1fr 1fr 0.9fr 1fr;
+    gap: 8px;
+    align-items: center;
+    border-bottom: 1px solid rgba(148,163,184,0.06);
+    padding: 6px 8px 8px 8px;
+    font-size: 12px;
+    color: #94a3b8;
+}
 .feed-item{ background: rgba(30,41,59,0.55); }
 
 /* Live-feed styles (match trade-feed demo) */
 .feed-container { position: relative; }
-.feed-list { display: flex; flex-direction: column; position: relative; width: 100%; overflow-y: scroll; scrollbar-gutter: stable; }
-.feed-list { scrollbar-width: none; -ms-overflow-style: none; -webkit-overflow-scrolling: touch; }
+.feed-list {
+    display: flex;
+    flex-direction: column;
+    position: relative;
+    width: 100%;
+    overflow-y: auto;
+    padding-right: 12px; /* fallback spacing when scrollbars are visible */
+    box-sizing: border-box;
+    -ms-overflow-style: none; /* hide scrollbar in IE/Edge */
+}
 
+@supports (scrollbar-width: none) {
+    .feed-list { scrollbar-width: none; } /* Firefox */
+}
+
+/* WebKit/Blink fallback */
 .feed-list::-webkit-scrollbar { width: 0; height: 0; }
 .feed-item {
     display: grid;
@@ -172,10 +290,8 @@ body{
 
 .feed-header .text-right { text-align: right; }
 
-#/* Left collapsible control panel */
-
 /* Order panel overlay (top-right) */
-.order-panel{ backdrop-filter: blur(6px); }
+.order-panel{ -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px); }
 .order-panel #orderType{ font-size:14px; }
 .order-panel .font-mono{ font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, 'Roboto Mono', 'Courier New', monospace; }
 .order-panel .progress-bar{ height:8px; background: rgba(255,255,255,0.06); border-radius:6px; overflow:hidden; }
@@ -193,6 +309,12 @@ body{
 /* order panel sizing and shadow — restored to default appearance */
 .order-panel{ border:1px solid rgba(148,163,184,0.08); box-shadow: 0 6px 20px rgba(2,6,23,0.45); width: auto; max-width: calc(100% - 220px); }
 
+/* Extracted inline rules from index.html */
+.order-panel-anchored { right: 12px; left: auto; max-width: calc(100% - 220px); width: auto; }
+
+/* Progress fill initial state (moved from inline) */
+#progressBarFill, #progressBarFill2 { width: 0%; }
+
 /* Visual emphasis for the active order panel to match Machine A focus */
 .order-panel.active{ border-color: rgba(96,165,250,0.28); box-shadow: 0 14px 40px rgba(2,6,23,0.6); }
 /* Ensure highlighted panel text matches visual emphasis (white values) */
@@ -203,10 +325,9 @@ body{
 /* layout adjustments for order panel */
 /* tighten spacing */
 .order-panel { gap: 8px; }
-.order-panel .left-group{ flex: 0 1 auto; min-width: 120px; display:flex; align-items:center; gap:6px; }
+.order-panel .left-group{ flex: 0 1 auto; min-width: 96px; display:flex; align-items:center; gap:6px; }
 .order-panel #orderMeta{ max-width: 420px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-/* Temporarily hide the progress bar and produced count so the meta can be shown clearly */
-.order-panel .w-40, .order-panel .order-right { display: none !important; }
+/* Progress/prod shown on desktop; hide on narrow screens (moved into responsive rules below) */
 /* Allow the order meta to wrap and use available space when progress/produced are hidden */
 .order-panel #orderMeta{
     white-space: normal !important;
@@ -219,15 +340,16 @@ body{
 .order-panel #orderMeta .order-val{ color: #ffffff; font-weight:700; margin-right:8px; }
 .order-panel #orderMeta .order-sep{ color: #94a3b8; margin:0 6px; }
 /* make progress bar longer to the left and reduce produced width */
-.order-panel .w-40 { width: 120px; flex: 0 0 120px; }
-.order-panel .order-right { flex: 0 0 60px; }
+.order-panel .w-40 { width: 96px; flex: 0 0 96px; }
+.order-panel .order-right { flex: 0 0 48px; }
 
 @media (max-width: 900px){
     #orderPanel{ left:8px; right:8px; }
 }
 
 /* Tweak Machine B feed vertical alignment to better match canvas position */
-#bagFeed2 { margin-top: 3.2rem; }
+/* remove forced offset so feed columns align vertically with machine canvas */
+#bagFeed2 { margin-top: 0; }
 
 /* Mobile: control visibility of desktop-only order panel pieces and expanded state */
 @media (max-width: 767.98px) {
@@ -336,6 +458,8 @@ body{
     .machine-wrap canvas { max-height: 160px !important; height: auto !important; }
     .feed-container { padding: 6px !important; }
 }
+
+
 
 /* Stack order-panel and its children vertically in landscape/short-height to prevent overlap */
 @media (orientation: landscape) and (max-width: 900px), (max-height: 520px) {

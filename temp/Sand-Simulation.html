@@ -1,0 +1,341 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Hopper Pellet Simulation - Adjusted Bucket Position</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body { background-color: #111; color: white; overflow: hidden; font-family: sans-serif; }
+        canvas {
+            image-rendering: pixelated;
+            touch-action: none;
+            cursor: crosshair;
+            box-shadow: 0 0 20px rgba(0,0,0,0.5);
+        }
+        .control-panel {
+            background: rgba(31, 41, 55, 0.95);
+            backdrop-filter: blur(8px);
+        }
+        .status-active { color: #4ade80; font-weight: bold; }
+        .loading-overlay {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: rgba(0,0,0,0.9);
+            padding: 15px 25px;
+            border-radius: 12px;
+            display: none;
+            z-index: 10;
+            border: 2px solid #3b82f6;
+            text-align: center;
+        }
+    </style>
+</head>
+<body class="flex flex-col items-center justify-center min-h-screen">
+
+    <div class="control-panel mb-4 flex flex-wrap gap-4 p-4 rounded-xl shadow-lg border border-gray-700">
+        <div class="flex flex-col items-center border-r border-gray-600 pr-4">
+            <label class="text-[10px] uppercase tracking-wider mb-1 text-gray-400">ระบบชั่งน้ำหนัก</label>
+            <div class="flex gap-2">
+                <button id="batchBtn" class="bg-purple-600 hover:bg-purple-700 px-4 py-1 rounded text-xs font-bold transition">ปล่อย 25 KG (BATCH)</button>
+            </div>
+        </div>
+
+        <div class="flex flex-col items-center border-r border-gray-600 pr-4">
+            <label class="text-[10px] uppercase tracking-wider mb-1 text-gray-400">การควบคุมวาล์ว</label>
+            <div class="flex gap-2">
+                <button id="gateBtn" class="bg-green-600 hover:bg-green-700 px-4 py-1 rounded text-xs font-bold transition w-32">เปิดวาล์ว</button>
+                <button id="autoFillBtn" class="bg-blue-600 hover:bg-blue-700 px-4 py-1 rounded text-xs font-bold transition">เติมทราย</button>
+            </div>
+        </div>
+
+        <div class="flex flex-col items-center border-r border-gray-600 pr-4">
+            <label class="text-[10px] uppercase tracking-wider mb-1 text-gray-400">น้ำหนักปัจจุบัน</label>
+            <span id="weightDisplay" class="text-green-400 font-mono text-xl font-bold">0.00 kg</span>
+        </div>
+
+        <div class="flex flex-col justify-center">
+            <button id="clearBtn" class="bg-red-600 hover:bg-red-700 px-4 py-2 rounded text-xs font-bold transition uppercase">Reset ทั้งหมด</button>
+        </div>
+    </div>
+
+    <div class="relative">
+        <canvas id="sandCanvas" width="200" height="200" class="bg-black rounded-lg border-4 border-gray-800 w-[500px] h-[500px] md:w-[600px] md:h-[600px]"></canvas>
+        <div id="loader" class="loading-overlay">
+            <div class="text-blue-400 text-sm mb-1">SYSTEM INITIALIZING</div>
+            <div class="text-white font-bold">กำลังขยับตำแหน่งถังลงด้านล่าง...</div>
+        </div>
+    </div>
+
+    <div class="mt-4 text-gray-400 text-xs flex flex-col items-center gap-1">
+        <div id="statusLabel" class="text-gray-500 italic">โหมดปกติ</div>
+        <div class="flex gap-4">
+            <span>🖱️ ลากเพื่อเพิ่มทราย</span>
+            <span>📍 Position: ขยับถังลงด้านล่างสุดเกือบถึงพื้น</span>
+        </div>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('sandCanvas');
+        const ctx = canvas.getContext('2d', { alpha: false });
+        const weightDisplay = document.getElementById('weightDisplay');
+        const gateBtn = document.getElementById('gateBtn');
+        const batchBtn = document.getElementById('batchBtn');
+        const autoFillBtn = document.getElementById('autoFillBtn');
+        const clearBtn = document.getElementById('clearBtn');
+        const statusLabel = document.getElementById('statusLabel');
+        const loader = document.getElementById('loader');
+
+        const width = canvas.width;
+        const height = canvas.height;
+        const size = width * height;
+
+        let grid = new Int8Array(size).fill(0);
+        let colorGrid = new Int32Array(size).fill(0);
+        let wallGrid = new Int8Array(size).fill(0); 
+        
+        let isMouseDown = false;
+        let isGateOpen = false;
+        let isBatchMode = false;
+        let isReady = false; 
+        let currentWeight = 0;
+
+        const SAND_COLOR = 0xE1B382;
+        const WALL_COLOR = 0xAAAAAA;
+        
+        const GATE_Y = 85; 
+        const GATE_X_START = 80; 
+        const GATE_X_END = 120;
+
+        // ปรับตำแหน่ง Bucket ลงมาด้านล่างสุด (เกือบถึงพื้นขอบล่างของ canvas)
+        const bucketY = 195; 
+        const bucketLeft = 45;
+        const bucketRight = 155;
+        const bucketHeight = 45;
+
+        function setGate(open) {
+            isGateOpen = open;
+            gateBtn.innerText = isGateOpen ? "ปิดวาล์ว" : "เปิดวาล์ว";
+            gateBtn.className = isGateOpen ? "bg-red-600 hover:bg-red-700 px-4 py-1 rounded text-xs font-bold transition w-32" : "bg-green-600 hover:bg-green-700 px-4 py-1 rounded text-xs font-bold transition w-32";
+            if (!open) {
+                isBatchMode = false;
+                statusLabel.innerText = "โหมดปกติ";
+                statusLabel.className = "text-gray-500 italic";
+            }
+        }
+
+        gateBtn.onclick = () => setGate(!isGateOpen);
+
+        batchBtn.onclick = () => {
+            isBatchMode = true;
+            statusLabel.innerText = "กำลังชั่งเป้าหมาย 25.00 kg...";
+            statusLabel.className = "status-active";
+            setGate(true);
+        };
+
+        autoFillBtn.onclick = () => {
+            for(let i = 0; i < 2500; i++) {
+                const rx = 75 + Math.random() * 50;
+                const ry = 10 + Math.random() * 30;
+                spawnAt(Math.floor(rx), Math.floor(ry), 1);
+            }
+        };
+
+        function drawLine(x1, y1, x2, y2, thickness = 2) {
+            const dx = Math.abs(x2 - x1);
+            const dy = Math.abs(y2 - y1);
+            const sx = (x1 < x2) ? 1 : -1;
+            const sy = (y1 < y2) ? 1 : -1;
+            let err = dx - dy;
+
+            while (true) {
+                for(let tx = -thickness; tx <= thickness; tx++) {
+                    for(let ty = -thickness; ty <= thickness; ty++) {
+                        const px = Math.floor(x1 + tx);
+                        const py = Math.floor(y1 + ty);
+                        if (px >= 0 && px < width && py >= 0 && py < height) {
+                            const idx = py * width + px;
+                            wallGrid[idx] = 2; 
+                        }
+                    }
+                }
+
+                if (x1 === x2 && y1 === y2) break;
+                const e2 = 2 * err;
+                if (e2 > -dy) { err -= dy; x1 += sx; }
+                if (e2 < dx) { err += dx; y1 += sy; }
+            }
+        }
+
+        function initHopper() {
+            isReady = false; 
+            loader.style.display = "block";
+            
+            grid.fill(0);
+            colorGrid.fill(0);
+            wallGrid.fill(0);
+            isGateOpen = false;
+            
+            // 1. ผนัง Hopper (เอียง)
+            drawLine(30, 15, 82, GATE_Y, 2);
+            drawLine(170, 15, 118, GATE_Y, 2);
+            
+            // 2. กรวยกระจายทราย (Distribution Cone)
+            drawLine(100, 105, 85, 120, 1); 
+            drawLine(100, 105, 115, 120, 1); 
+            drawLine(85, 120, 115, 120, 1); 
+            
+            // 3. ถังรองรับ (ตำแหน่งใหม่ด้านล่างสุด)
+            drawLine(bucketLeft, bucketY, bucketRight, bucketY, 1);
+            drawLine(bucketLeft, bucketY - bucketHeight, bucketLeft, bucketY, 1);
+            drawLine(bucketRight, bucketY - bucketHeight, bucketRight, bucketY, 1);
+
+            for (let i = 0; i < size; i++) {
+                if (wallGrid[i] === 2) {
+                    grid[i] = 2;
+                    colorGrid[i] = WALL_COLOR;
+                }
+            }
+
+            setGate(false);
+            currentWeight = 0;
+            
+            setTimeout(() => {
+                for(let i = 0; i < 4000; i++) {
+                    const rx = 70 + Math.random() * 60; 
+                    const ry = 10 + Math.random() * 55;
+                    spawnAt(Math.floor(rx), Math.floor(ry), 1);
+                }
+                isReady = true; 
+                loader.style.display = "none";
+            }, 250);
+        }
+
+        function spawnAt(x, y, type) {
+            if (x >= 0 && x < width && y >= 0 && y < height) {
+                const idx = y * width + x;
+                if(grid[idx] === 0) {
+                    grid[idx] = type;
+                    colorGrid[idx] = type === 1 ? SAND_COLOR : WALL_COLOR;
+                }
+            }
+        }
+
+        canvas.addEventListener('mousedown', () => isMouseDown = true);
+        window.addEventListener('mouseup', () => isMouseDown = false);
+        canvas.addEventListener('mousemove', (e) => {
+            if (isMouseDown) {
+                const rect = canvas.getBoundingClientRect();
+                const x = Math.floor((e.clientX - rect.left) * (width / rect.width));
+                const y = Math.floor((e.clientY - rect.top) * (height / rect.height));
+                for(let i=-2; i<2; i++) for(let j=-2; j<2; j++) spawnAt(x+i, y+j, 1);
+            }
+        });
+
+        clearBtn.addEventListener('click', initHopper);
+
+        function updatePhysics() {
+            if (!isReady) return; 
+
+            let newWeight = 0;
+            for (let y = height - 2; y >= 0; y--) {
+                const lToR = Math.random() > 0.5;
+                for (let i = 0; i < width; i++) {
+                    const x = lToR ? i : width - 1 - i;
+                    const idx = y * width + x;
+                    
+                    if (grid[idx] === 1) { 
+                        if (!isGateOpen) {
+                            if (y >= GATE_Y - 2 && y <= GATE_Y + 2 && x >= GATE_X_START && x <= GATE_X_END) {
+                                continue; 
+                            }
+                        }
+
+                        const below = (y + 1) * width + x;
+                        const bl = (y + 1) * width + (x - 1);
+                        const br = (y + 1) * width + (x + 1);
+
+                        if (grid[below] === 0) {
+                            grid[below] = 1;
+                            colorGrid[below] = colorGrid[idx];
+                            grid[idx] = 0;
+                        } else if (grid[below] === 2 || grid[bl] === 2 || grid[br] === 2) {
+                            const moveLeft = (x > 0 && grid[bl] === 0);
+                            const moveRight = (x < width - 1 && grid[br] === 0);
+                            
+                            if (moveLeft && moveRight) {
+                                const dir = Math.random() > 0.5 ? bl : br;
+                                grid[dir] = 1;
+                                colorGrid[dir] = colorGrid[idx];
+                                grid[idx] = 0;
+                            } else if (moveLeft) {
+                                grid[bl] = 1;
+                                colorGrid[bl] = colorGrid[idx];
+                                grid[idx] = 0;
+                            } else if (moveRight) {
+                                grid[br] = 1;
+                                colorGrid[br] = colorGrid[idx];
+                                grid[idx] = 0;
+                            }
+                        } else {
+                            if (x > 0 && grid[bl] === 0) {
+                                grid[bl] = 1;
+                                colorGrid[bl] = colorGrid[idx];
+                                grid[idx] = 0;
+                            } else if (x < width - 1 && grid[br] === 0) {
+                                grid[br] = 1;
+                                colorGrid[br] = colorGrid[idx];
+                                grid[idx] = 0;
+                            }
+                        }
+
+                        if (y >= bucketY - bucketHeight && y < bucketY && x > bucketLeft && x < bucketRight) {
+                            newWeight += 0.05; 
+                        }
+                    }
+                }
+            }
+            
+            currentWeight = newWeight;
+            weightDisplay.innerText = currentWeight.toFixed(2) + " kg";
+
+            if (isBatchMode && currentWeight >= 25.0) {
+                setGate(false);
+                statusLabel.innerText = "สำเร็จ! ชั่งได้ 25.00 kg";
+                statusLabel.className = "text-yellow-400 font-bold";
+            }
+        }
+
+        const imgData = ctx.createImageData(width, height);
+        const u32view = new Uint32Array(imgData.data.buffer);
+
+        function render() {
+            for (let i = 0; i < size; i++) {
+                if (grid[i] === 0) {
+                    u32view[i] = 0xFF000000;
+                } else {
+                    const col = colorGrid[i];
+                    u32view[i] = 0xFF000000 | ((col & 0xFF) << 16) | (col & 0xFF00) | ((col >> 16) & 0xFF);
+                }
+            }
+            ctx.putImageData(imgData, 0, 0);
+
+            if (!isGateOpen) {
+                ctx.fillStyle = "#FF3333";
+                ctx.fillRect(GATE_X_START, GATE_Y - 1, (GATE_X_END - GATE_X_START), 4);
+            }
+        }
+
+        function loop() {
+            updatePhysics();
+            render();
+            requestAnimationFrame(loop);
+        }
+
+        initHopper();
+        loop();
+    </script>
+</body>
+</html>

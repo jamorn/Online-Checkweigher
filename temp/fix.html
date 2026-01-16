@@ -1,0 +1,252 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ระบบจำลองเม็ดพลาสติกในถังพัก (Fixed Physics)</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body { background-color: #1a1a1a; color: white; overflow: hidden; }
+        canvas { display: block; margin: 0 auto; background: #000; touch-action: none; }
+        .controls { position: absolute; top: 10px; left: 10px; z-index: 10; background: rgba(0,0,0,0.7); padding: 15px; border-radius: 8px; }
+    </style>
+</head>
+<body>
+
+<div class="controls">
+    <h1 class="text-xl font-bold mb-2 text-blue-400">ระบบจำลองการไหล (Improved Physics)</h1>
+    <p class="text-xs mb-4 text-gray-400">แก้ไขปัญหาเม็ดทะลุและแรงกดทับที่ Hopper</p>
+    <div class="flex flex-col gap-2">
+        <label class="text-sm">จำนวนเม็ด: <span id="countVal">200</span></label>
+        <input type="range" id="particleCount" min="50" max="600" value="200" class="w-full">
+        
+        <label class="text-sm">แรงเสียดทาน: <span id="fricVal">0.1</span></label>
+        <input type="range" id="friction" min="0" max="100" value="10" class="w-full">
+        
+        <button id="resetBtn" class="bg-blue-600 hover:bg-blue-500 text-white py-1 px-4 rounded mt-2 transition">รีเซ็ตระบบ</button>
+    </div>
+</div>
+
+<canvas id="simCanvas"></canvas>
+
+<script>
+/**
+ * การปรับปรุงระบบฟิสิกส์:
+ * 1. Sub-stepping: คำนวณหลายครั้งต่อเฟรมเพื่อลดการทะลุ (Sub-stepping)
+ * 2. Position Correction: ดันเม็ดที่ทับซ้อนกันออกทันที (Non-penetration constraint)
+ * 3. Wall Collision Fix: ปรับปรุงการคำนวณระยะห่างจากผนัง Hopper ให้แม่นยำขึ้น
+ */
+
+const canvas = document.getElementById('simCanvas');
+const ctx = canvas.getContext('2d');
+const countSlider = document.getElementById('particleCount');
+const fricSlider = document.getElementById('friction');
+const resetBtn = document.getElementById('resetBtn');
+
+let particles = [];
+let width, height;
+let hopperLines = [];
+
+// กำหนดคุณสมบัติฟิสิกส์
+let config = {
+    gravity: 0.25,
+    friction: 0.1,
+    restitution: 0.2, // ความเด้ง (น้อยลงเพื่อให้นิ่งขึ้นที่ก้น)
+    radius: 6,
+    subSteps: 8 // จำนวนรอบที่คำนวณต่อเฟรม (ยิ่งเยอะยิ่งแม่นแต่กินสเปค)
+};
+
+class Particle {
+    constructor(x, y) {
+        this.x = x;
+        this.y = y;
+        this.oldX = x - (Math.random() - 0.5) * 2;
+        this.oldY = y;
+        this.r = config.radius + (Math.random() * 2); // ขนาดไม่เท่ากันนิดหน่อยลดการล็อคตัว
+        this.color = `hsl(${200 + Math.random() * 40}, 70%, 60%)`;
+    }
+
+    update() {
+        let vx = (this.x - this.oldX) * (1 - config.friction);
+        let vy = (this.y - this.oldY) * (1 - config.friction);
+
+        this.oldX = this.x;
+        this.oldY = this.y;
+
+        this.x += vx;
+        this.y += vy + (config.gravity / config.subSteps);
+    }
+
+    draw() {
+        ctx.beginPath();
+        ctx.arc(this.x, this.y, this.r, 0, Math.PI * 2);
+        ctx.fillStyle = this.color;
+        ctx.fill();
+        ctx.strokeStyle = 'rgba(255,255,255,0.1)';
+        ctx.stroke();
+    }
+}
+
+function resize() {
+    width = window.innerWidth;
+    height = window.innerHeight;
+    canvas.width = width;
+    canvas.height = height;
+
+    const centerX = width / 2;
+    const hTop = height * 0.2;
+    const hMid = height * 0.6;
+    const hBottom = height * 0.9;
+    const wTop = 300;
+    const wBottom = 60;
+
+    // นิยามเส้นขอบของ Hopper (พิกัด x1, y1, x2, y2)
+    hopperLines = [
+        // ผนังตรงด้านบนซ้าย
+        { x1: centerX - wTop, y1: hTop, x2: centerX - wTop, y2: hMid },
+        // ผนังเอียงซ้าย (Bottom Hopper)
+        { x1: centerX - wTop, y1: hMid, x2: centerX - wBottom, y2: hBottom },
+        // ผนังตรงด้านบนขวา
+        { x1: centerX + wTop, y1: hTop, x2: centerX + wTop, y2: hMid },
+        // ผนังเอียงขวา (Bottom Hopper)
+        { x1: centerX + wTop, y1: hMid, x2: centerX + wBottom, y2: hBottom },
+        // พื้นก้นถัง
+        { x1: centerX - wBottom, y1: hBottom, x2: centerX + wBottom, y2: hBottom }
+    ];
+}
+
+function initParticles() {
+    particles = [];
+    const count = parseInt(countSlider.value);
+    const centerX = width / 2;
+    for (let i = 0; i < count; i++) {
+        particles.push(new Particle(
+            centerX + (Math.random() - 0.5) * 400,
+            Math.random() * -height // ปล่อยจากด้านบนสุด
+        ));
+    }
+}
+
+// ฟังก์ชันหาจุดที่ใกล้ที่สุดบนเส้นตรง เพื่อใช้คำนวณ Collision กับผนัง
+function closestPointOnLine(px, py, x1, y1, x2, y2) {
+    const l2 = Math.pow(x2 - x1, 2) + Math.pow(y2 - y1, 2);
+    if (l2 === 0) return { x: x1, y: y1 };
+    let t = ((px - x1) * (x2 - x1) + (py - y1) * (y2 - y1)) / l2;
+    t = Math.max(0, Math.min(1, t));
+    return {
+        x: x1 + t * (x2 - x1),
+        y: y1 + t * (y2 - y1)
+    };
+}
+
+function resolveCollisions() {
+    // 1. Particle vs Wall Collision
+    for (let p of particles) {
+        for (let line of hopperLines) {
+            const closest = closestPointOnLine(p.x, p.y, line.x1, line.y1, line.x2, line.y2);
+            const dx = p.x - closest.x;
+            const dy = p.y - closest.y;
+            const dist = Math.sqrt(dx * dx + dy * dy);
+
+            if (dist < p.r) {
+                const nx = dx / dist;
+                const ny = dy / dist;
+                const overlap = p.r - dist;
+                
+                // ดันกลับออกทันที
+                p.x += nx * overlap;
+                p.y += ny * overlap;
+
+                // ลดความเร็วในทิศทางที่ชน (Inelastic collision)
+                let vx = p.x - p.oldX;
+                let vy = p.y - p.oldY;
+                
+                // กระทบผนัง: สะท้อนกลับเล็กน้อย
+                const dot = vx * nx + vy * ny;
+                if (dot < 0) {
+                    p.oldX = p.x - (vx - 2 * dot * nx) * config.restitution;
+                    p.oldY = p.y - (vy - 2 * dot * ny) * config.restitution;
+                }
+            }
+        }
+    }
+
+    // 2. Particle vs Particle Collision
+    // ใช้ Simple Grid หรือ Brute force (เนื่องจากจำนวนเม็ดไม่เยอะมาก)
+    for (let i = 0; i < particles.length; i++) {
+        for (let j = i + 1; j < particles.length; j++) {
+            const p1 = particles[i];
+            const p2 = particles[j];
+            const dx = p2.x - p1.x;
+            const dy = p2.y - p1.y;
+            const minDist = p1.r + p2.r;
+            const distSq = dx * dx + dy * dy;
+
+            if (distSq < minDist * minDist) {
+                const dist = Math.sqrt(distSq);
+                const nx = dx / dist;
+                const ny = dy / dist;
+                const overlap = (minDist - dist) / 2;
+
+                // ดันออกจากกัน (Position correction)
+                p1.x -= nx * overlap;
+                p1.y -= ny * overlap;
+                p2.x += nx * overlap;
+                p2.y += ny * overlap;
+            }
+        }
+    }
+}
+
+function animate() {
+    ctx.clearRect(0, 0, width, height);
+
+    // วาด Hopper
+    ctx.beginPath();
+    ctx.lineWidth = 4;
+    ctx.strokeStyle = '#444';
+    hopperLines.forEach(l => {
+        ctx.moveTo(l.x1, l.y1);
+        ctx.lineTo(l.x2, l.y2);
+    });
+    ctx.stroke();
+
+    // คำนวณฟิสิกส์แบบ Sub-stepping เพื่อความแม่นยำ
+    for (let s = 0; s < config.subSteps; s++) {
+        for (let p of particles) {
+            p.update();
+        }
+        resolveCollisions();
+    }
+
+    // วาดเม็ดพลาสติก
+    for (let p of particles) {
+        p.draw();
+    }
+
+    requestAnimationFrame(animate);
+}
+
+// UI Events
+countSlider.oninput = (e) => {
+    document.getElementById('countVal').innerText = e.target.value;
+};
+fricSlider.oninput = (e) => {
+    config.friction = e.target.value / 100;
+    document.getElementById('fricVal').innerText = config.friction.toFixed(2);
+};
+resetBtn.onclick = initParticles;
+
+window.addEventListener('resize', () => {
+    resize();
+    initParticles();
+});
+
+// Start
+resize();
+initParticles();
+animate();
+
+</script>
+</body>
+</html>

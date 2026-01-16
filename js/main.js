@@ -399,6 +399,8 @@ window.addEventListener('load', () => {
             const pb = document.getElementById(progressFillId);
             if(pb) pb.style.width = `${Math.min(100, Math.round(DEMO_PROGRESS*100))}%`;
 
+            // No per-machine positional overrides — keep Machine B panel same as Machine A
+
             // build tooltip details: include Remain, ETA, Live Weight, Bag Shape, Control Status, Settings, Legend
             try {
                 const liveWeightEl = document.getElementById(suffix === '2' ? 'weightVal2' : 'weightVal');
@@ -437,6 +439,94 @@ window.addEventListener('load', () => {
     // initialize order panels for default presets
     updateOrderPanelForPreset('small', '');
     updateOrderPanelForPreset('large', '2');
+
+    // Align right-hand feed boxes with their corresponding machines (A/B)
+    function alignFeeds() {
+        try {
+            const aside = document.querySelector('aside');
+            const bagFeed = document.getElementById('bagFeed');
+            const bagFeed2 = document.getElementById('bagFeed2');
+            const machineA = document.getElementById('machineA');
+            const machineB = document.getElementById('machineB');
+            if (!aside || !bagFeed || !bagFeed2 || !machineA || !machineB) return;
+
+            // Only apply on wide layouts where side column sits next to machines
+            if (window.innerWidth < 980) {
+                bagFeed.style.marginTop = '';
+                bagFeed2.style.marginTop = '';
+                return;
+            }
+
+            const asideRect = aside.getBoundingClientRect();
+
+            // Prefer the machine's main canvas/display area so feeds align with the visual machine
+            const canvasA = machineA.querySelector('#factoryCanvas, canvas, .shadow-canvas');
+            const canvasB = machineB.querySelector('#factoryCanvas2, canvas, .shadow-canvas');
+            const wrapA = canvasA || machineA.querySelector('.machine-wrap') || machineA;
+            const wrapB = canvasB || machineB.querySelector('.machine-wrap') || machineB;
+            const aRect = wrapA.getBoundingClientRect();
+            const bRect = wrapB.getBoundingClientRect();
+
+            // Compute offsets relative to the aside top
+            // Align feed top edges to the machine canvas top edge for a level-mounted appearance
+            // Per-machine visual nudges: keep A slightly tucked up, and allow B an extra downward offset
+            const FEED_VERTICAL_OFFSET = -12; // visual nudge (px) to tuck feed slightly higher for Machine A
+            const FEED2_ADDITIONAL = 140; // extra pixels to move Machine B feed further down (adjustable)
+            const topA = Math.max(0, Math.round(aRect.top - asideRect.top + FEED_VERTICAL_OFFSET));
+            const topB = Math.max(0, Math.round(bRect.top - asideRect.top + FEED_VERTICAL_OFFSET + FEED2_ADDITIONAL));
+
+            // Apply transforms so the feed boxes' top edges line up with each machine visual top
+            // Compute using absolute bounding rects (viewport coords) to avoid offsetParent inconsistencies.
+            try {
+                const bagRect = bagFeed.getBoundingClientRect();
+                const bag2Rect = bagFeed2.getBoundingClientRect();
+
+                // target absolute top positions (viewport coords)
+                const targetAAbs = Math.round(aRect.top + FEED_VERTICAL_OFFSET);
+                const targetBAbs = Math.round(bRect.top + FEED_VERTICAL_OFFSET + FEED2_ADDITIONAL);
+
+                // deltas to move current feed top to target top
+                const deltaA = Math.round(targetAAbs - bagRect.top);
+                const deltaB = Math.round(targetBAbs - bag2Rect.top);
+
+                bagFeed.style.transform = `translateY(${deltaA}px)`;
+                bagFeed2.style.transform = `translateY(${deltaB}px)`;
+            } catch (e) {
+                // fallback to margin-top (relative to aside) if transform fails
+                bagFeed.style.marginTop = topA + 'px';
+                bagFeed2.style.marginTop = topB + 'px';
+            }
+        } catch (e) { /* silent */ }
+    }
+
+    // Debounced resize handler
+    let _alignTimer = null;
+    window.addEventListener('resize', () => {
+        if (_alignTimer) clearTimeout(_alignTimer);
+        _alignTimer = setTimeout(() => requestAnimationFrame(alignFeeds), 120);
+    });
+
+    // Also realign on scroll (passive) to handle user scrolling
+    window.addEventListener('scroll', () => { requestAnimationFrame(alignFeeds); }, { passive: true });
+
+    // If the hopper iframe exists, re-run alignment after it loads (layout may shift)
+    try {
+        const hopper = document.querySelector('.hopper-iframe');
+        if (hopper) hopper.addEventListener('load', () => setTimeout(() => alignFeeds(), 80));
+    } catch (e) {}
+
+    // Run alignment several times after load to allow layout/iframes/CSS to stabilise
+    const runAlignRetries = () => {
+        try {
+            alignFeeds();
+            setTimeout(alignFeeds, 150);
+            setTimeout(alignFeeds, 400);
+            setTimeout(alignFeeds, 800);
+        } catch (e) {}
+    };
+
+    // Run once after a short delay and with retries
+    setTimeout(runAlignRetries, 300);
 
     animate();
 });

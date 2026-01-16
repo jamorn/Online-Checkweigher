@@ -1,0 +1,345 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Fully Sealed Hopper Simulation</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body {
+            background-color: #0f172a;
+            margin: 0;
+            overflow: hidden;
+            font-family: 'Inter', sans-serif;
+        }
+        canvas {
+            display: block;
+            touch-action: none;
+        }
+        .controls {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            background: rgba(15, 23, 42, 0.9);
+            padding: 20px;
+            border-radius: 12px;
+            color: white;
+            backdrop-filter: blur(12px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            z-index: 10;
+            width: 280px;
+        }
+        .weight-display {
+            font-size: 2rem;
+            font-family: 'Courier New', Courier, monospace;
+            color: #10b981;
+            text-shadow: 0 0 10px rgba(16, 185, 129, 0.5);
+        }
+    </style>
+</head>
+<body>
+
+    <div class="controls shadow-2xl">
+        <h2 class="text-lg font-bold mb-2 text-slate-200">Hopper Sealed System</h2>
+        <div class="space-y-3">
+            <div class="bg-slate-800 p-3 rounded-lg border border-slate-700">
+                <p class="text-xs text-slate-400 uppercase font-semibold mb-1">น้ำหนักรวม (Weight)</p>
+                <div class="weight-display"><span id="weightVal">0.00</span> <span class="text-sm">g</span></div>
+            </div>
+            <div class="bg-slate-800 p-3 rounded-lg border border-slate-700">
+                <p class="text-sm text-slate-300">จำนวนเม็ด: <span id="countVal" class="text-emerald-400 font-mono">0</span></p>
+            </div>
+            <button id="clearBtn" class="bg-red-500/80 hover:bg-red-600 text-white px-4 py-2 rounded-lg text-sm transition-colors w-full font-medium">
+                ล้างหน้าจอ
+            </button>
+            <div class="text-[10px] text-slate-400 italic leading-tight">
+                * ปรับปรุง: ปิดช่องโหว่ที่มุมฐาน (Corner Leakage Fix) และเพิ่มความหนาแน่นของผนัง
+            </div>
+        </div>
+    </div>
+
+    <canvas id="simCanvas"></canvas>
+
+    <script>
+        (function() {
+            const canvas = document.getElementById('simCanvas');
+            const ctx = canvas.getContext('2d');
+            const countDisplay = document.getElementById('countVal');
+            const weightDisplay = document.getElementById('weightVal');
+            const clearBtn = document.getElementById('clearBtn');
+
+            let width, height;
+            let particles = [];
+            let isPouring = false;
+            let mouseX = 0, mouseY = 0;
+
+            const PIXELS_PER_METER = 100; 
+            const GRAVITY_CONSTANT = 18 * PIXELS_PER_METER; 
+            const DT = 1/60; 
+            const MASS = 1.0;
+            const RESTITUTION = 0.02; 
+            const FRICTION_DYNAMIC = 0.9; 
+            const AIR_RESISTANCE = 0.97;
+            const SLEEP_THRESHOLD = 0.4; 
+            const PARTICLE_RADIUS = 3.5;
+
+            let hopper = {
+                bottomY: 0,
+                bottomWidth: 160,
+                topY: 0,
+                wallSlope: 1.5, 
+                height: 400
+            };
+
+            function getRandomColor() {
+                const colors = ['#fde68a', '#f59e0b', '#d97706', '#fbbf24', '#78350f'];
+                return colors[Math.floor(Math.random() * colors.length)];
+            }
+
+            class Particle {
+                constructor(x, y) {
+                    this.x = x;
+                    this.y = y;
+                    this.vx = (Math.random() - 0.5) * 30; 
+                    this.vy = 10; 
+                    this.radius = PARTICLE_RADIUS;
+                    this.color = getRandomColor();
+                    this.m = MASS;
+                    this.isSleeping = false;
+                    this.sleepTimer = 0;
+                }
+
+                update() {
+                    if (this.isSleeping) return;
+
+                    this.vy += GRAVITY_CONSTANT * DT;
+                    this.vx *= AIR_RESISTANCE;
+                    this.vy *= AIR_RESISTANCE;
+
+                    this.x += this.vx * DT;
+                    this.y += this.vy * DT;
+
+                    this.checkHopperConstraints();
+
+                    if (Math.abs(this.vx) < SLEEP_THRESHOLD && Math.abs(this.vy) < SLEEP_THRESHOLD) {
+                        this.sleepTimer++;
+                        if (this.sleepTimer > 10) { 
+                            this.isSleeping = true;
+                            this.vx = 0;
+                            this.vy = 0;
+                        }
+                    } else {
+                        this.sleepTimer = 0;
+                    }
+                }
+
+                checkHopperConstraints() {
+                    const bLeft = width/2 - hopper.bottomWidth/2;
+                    const bRight = width/2 + hopper.bottomWidth/2;
+                    
+                    // ป้องกันการหลุดออกนอกขอบจอ (Safety Net)
+                    if (this.y > height) this.y = height - this.radius;
+
+                    // 1. พื้นฐาน Hopper (Bottom Floor)
+                    // ขยายอาณาเขตการตรวจจับพื้นให้กว้างกว่าขอบเล็กน้อยเพื่อปิดช่องโหว่มุม
+                    if (this.y + this.radius > hopper.bottomY && this.x > bLeft - 10 && this.x < bRight + 10) {
+                        this.y = hopper.bottomY - this.radius;
+                        this.vy *= -RESTITUTION;
+                        this.vx *= 0.4; 
+                        if (Math.abs(this.vy) < SLEEP_THRESHOLD) {
+                            this.vy = 0;
+                            this.isSleeping = true;
+                        }
+                    }
+
+                    // 2. ผนังข้าง (Walls)
+                    const tLeft = bLeft - hopper.height / hopper.wallSlope;
+                    const tRight = bRight + hopper.height / hopper.wallSlope;
+
+                    if (this.y < hopper.bottomY) {
+                        let wallXLeft, wallXRight;
+                        if (this.y > hopper.topY) {
+                            // ช่วงผนังเอียง
+                            wallXLeft = bLeft - (hopper.bottomY - this.y) / hopper.wallSlope;
+                            wallXRight = bRight + (hopper.bottomY - this.y) / hopper.wallSlope;
+                        } else {
+                            // ช่วงผนังแนวตั้ง
+                            wallXLeft = tLeft;
+                            wallXRight = tRight;
+                        }
+
+                        // ตรวจสอบผนังซ้าย
+                        if (this.x - this.radius < wallXLeft) {
+                            this.x = wallXLeft + this.radius;
+                            this.vx *= -RESTITUTION;
+                            this.vx += 0.5; // ช่วยดันให้ไหลลง
+                        }
+                        // ตรวจสอบผนังขวา
+                        if (this.x + this.radius > wallXRight) {
+                            this.x = wallXRight - this.radius;
+                            this.vx *= -RESTITUTION;
+                            this.vx -= 0.5;
+                        }
+                    }
+                }
+
+                draw() {
+                    ctx.beginPath();
+                    ctx.arc(this.x, this.y, this.radius, 0, Math.PI * 2);
+                    ctx.fillStyle = this.color;
+                    ctx.fill();
+                }
+            }
+
+            function resolveCollision(p1, p2) {
+                const dx = p2.x - p1.x;
+                const dy = p2.y - p1.y;
+                const distSqr = dx * dx + dy * dy;
+                const minDist = p1.radius + p2.radius;
+
+                if (distSqr < minDist * minDist) {
+                    const dist = Math.sqrt(distSqr);
+                    const nx = dx / dist;
+                    const ny = dy / dist;
+
+                    const rvx = p2.vx - p1.vx;
+                    const rvy = p2.vy - p1.vy;
+                    const vn = rvx * nx + rvy * ny;
+
+                    if (Math.abs(vn) > SLEEP_THRESHOLD * 5) {
+                        p1.isSleeping = false;
+                        p2.isSleeping = false;
+                    }
+
+                    if (p1.isSleeping && p2.isSleeping) return;
+
+                    const overlap = minDist - dist;
+                    if (!p1.isSleeping) {
+                        p1.x -= nx * overlap * 0.5;
+                        p1.y -= ny * overlap * 0.5;
+                    }
+                    if (!p2.isSleeping) {
+                        p2.x += nx * overlap * 0.5;
+                        p2.y += ny * overlap * 0.5;
+                    }
+
+                    if (vn > 0) return;
+
+                    let j = -(1 + RESTITUTION) * vn;
+                    j /= (1 / p1.m + 1 / p2.m);
+
+                    const impulseX = j * nx;
+                    const impulseY = j * ny;
+
+                    if (!p1.isSleeping) {
+                        p1.vx -= impulseX / p1.m;
+                        p1.vy -= impulseY / p1.m;
+                    }
+                    if (!p2.isSleeping) {
+                        p2.vx += impulseX / p2.m;
+                        p2.vy += impulseY / p2.m;
+                    }
+                }
+            }
+
+            function drawHopper() {
+                const bLeft = width/2 - hopper.bottomWidth/2;
+                const bRight = width/2 + hopper.bottomWidth/2;
+                const tLeft = bLeft - hopper.height / hopper.wallSlope;
+                const tRight = bRight + hopper.height / hopper.wallSlope;
+
+                ctx.strokeStyle = '#94a3b8';
+                ctx.lineWidth = 14; // เพิ่มความหนาของโครงสร้าง
+                ctx.lineCap = 'round';
+                ctx.lineJoin = 'miter'; // ใช้มุมเหลี่ยมเพื่อปิดช่องว่างมุมได้ดีกว่า
+                
+                ctx.beginPath();
+                ctx.moveTo(tLeft, 0); 
+                ctx.lineTo(tLeft, hopper.topY);
+                ctx.lineTo(bLeft, hopper.bottomY);
+                ctx.lineTo(bRight, hopper.bottomY);
+                ctx.lineTo(tRight, hopper.topY);
+                ctx.lineTo(tRight, 0);
+                ctx.stroke();
+
+                // วาดเน้นมุมฐาน (Reinforcement) เพื่อความสวยงามและแสดงว่าเป็นจุดที่แข็งแรง
+                ctx.fillStyle = '#64748b';
+                ctx.beginPath();
+                ctx.arc(bLeft, hopper.bottomY, 7, 0, Math.PI * 2);
+                ctx.arc(bRight, hopper.bottomY, 7, 0, Math.PI * 2);
+                ctx.fill();
+            }
+
+            function resize() {
+                width = window.innerWidth;
+                height = window.innerHeight;
+                canvas.width = width;
+                canvas.height = height;
+                hopper.bottomY = height - 120;
+                hopper.topY = hopper.bottomY - hopper.height;
+            }
+
+            function animate() {
+                ctx.clearRect(0, 0, width, height);
+                drawHopper();
+
+                if (isPouring && particles.length < 4000) { 
+                    const bLeft = width/2 - hopper.bottomWidth/2;
+                    const bRight = width/2 + hopper.bottomWidth/2;
+                    const tLeft = bLeft - hopper.height / hopper.wallSlope;
+                    const tRight = bRight + hopper.height / hopper.wallSlope;
+                    
+                    if (mouseX > tLeft + 15 && mouseX < tRight - 15) {
+                        for(let i=0; i<8; i++) {
+                            particles.push(new Particle(mouseX + (Math.random()*14-7), mouseY));
+                        }
+                    }
+                }
+
+                let currentWeight = 0;
+                // คำนวณฟิสิกส์ 3 รอบต่อเฟรม (High Precision) เพื่อป้องกันการทะลุผนัง
+                for(let step=0; step<3; step++) {
+                    for (let i = 0; i < particles.length; i++) {
+                        const p1 = particles[i];
+                        if (step === 0) {
+                            p1.update();
+                            if (p1.isSleeping) currentWeight += p1.m;
+                        }
+
+                        for (let j = i + 1; j < particles.length; j++) {
+                            const p2 = particles[j];
+                            if (Math.abs(p1.x - p2.x) < 10 && Math.abs(p1.y - p2.y) < 10) {
+                                resolveCollision(p1, p2);
+                            }
+                        }
+                    }
+                }
+
+                particles.forEach(p => p.draw());
+
+                countDisplay.innerText = particles.length;
+                weightDisplay.innerText = currentWeight.toFixed(2);
+                requestAnimationFrame(animate);
+            }
+
+            window.addEventListener('resize', resize);
+            const updateMousePos = (e) => {
+                const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+                const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+                mouseX = clientX; mouseY = clientY;
+            };
+
+            canvas.addEventListener('mousedown', (e) => { isPouring = true; updateMousePos(e); });
+            canvas.addEventListener('mousemove', updateMousePos);
+            window.addEventListener('mouseup', () => isPouring = false);
+            canvas.addEventListener('touchstart', (e) => { e.preventDefault(); isPouring = true; updateMousePos(e); });
+            canvas.addEventListener('touchmove', (e) => { e.preventDefault(); updateMousePos(e); });
+            window.addEventListener('touchend', () => isPouring = false);
+            clearBtn.addEventListener('click', () => { particles = []; weightDisplay.innerText = "0.00"; });
+
+            resize();
+            animate();
+        })();
+    </script>
+</body>
+</html>

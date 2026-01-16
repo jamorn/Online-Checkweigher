@@ -1,0 +1,242 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Physics Grain Simulation</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body {
+            background-color: #1a1a1a;
+            margin: 0;
+            overflow: hidden;
+            font-family: 'Inter', sans-serif;
+        }
+        canvas {
+            display: block;
+            touch-action: none;
+        }
+        .controls {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            background: rgba(0, 0, 0, 0.7);
+            padding: 20px;
+            border-radius: 12px;
+            color: white;
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            z-index: 10;
+        }
+    </style>
+</head>
+<body>
+
+    <div class="controls shadow-2xl">
+        <h2 class="text-xl font-bold mb-4">การจำลองการเทเม็ดวัตถุ</h2>
+        <div class="space-y-4">
+            <div>
+                <label class="block text-sm mb-1">จำนวนเม็ด: <span id="countVal">0</span></label>
+                <button id="clearBtn" class="bg-red-500 hover:bg-red-600 text-white px-4 py-2 rounded-lg text-sm transition-colors w-full">
+                    ล้างหน้าจอ
+                </button>
+            </div>
+            <div class="text-xs text-gray-400">
+                * คลิกหรือทัชค้างไว้เพื่อเทเม็ดวัตถุลงมา<br>
+                * สังเกตการกลิ้งและการเรียงตัวที่เป็นธรรมชาติ
+            </div>
+        </div>
+    </div>
+
+    <canvas id="simCanvas"></canvas>
+
+    <script>
+        const canvas = document.getElementById('simCanvas');
+        const ctx = canvas.getContext('2d');
+        const countDisplay = document.getElementById('countVal');
+        const clearBtn = document.getElementById('clearBtn');
+
+        let width, height;
+        let particles = [];
+        let isPouring = false;
+        let mouseX, mouseY;
+
+        // Configuration
+        const GRAVITY = 0.25;
+        const FRICTION = 0.98;
+        const BOUNCE = 0.3;
+        const PARTICLE_RADIUS = 5;
+        const COLORS = ['#e17055', '#fdcb6e', '#00b894', '#0984e3', '#6c5ce7'];
+
+        class Particle {
+            constructor(x, y, color) {
+                this.x = x;
+                this.y = y;
+                this.vx = (Math.random() - 0.5) * 4;
+                this.vy = Math.random() * 2;
+                this.radius = PARTICLE_RADIUS + (Math.random() * 2 - 1); // ขนาดต่างกันเล็กน้อยเพื่อความสมจริง
+                this.color = color;
+                this.mass = this.radius;
+            }
+
+            update() {
+                this.vy += GRAVITY;
+                this.vx *= FRICTION;
+                this.vy *= FRICTION;
+
+                this.x += this.vx;
+                this.y += this.vy;
+
+                // พื้นหลัง
+                if (this.y + this.radius > height) {
+                    this.y = height - this.radius;
+                    this.vy *= -BOUNCE;
+                    this.vx *= 0.5; // แรงเสียดทานพื้น
+                }
+
+                // ขอบซ้ายขวา
+                if (this.x - this.radius < 0) {
+                    this.x = this.radius;
+                    this.vx *= -BOUNCE;
+                } else if (this.x + this.radius > width) {
+                    this.x = width - this.radius;
+                    this.vx *= -BOUNCE;
+                }
+            }
+
+            draw() {
+                ctx.beginPath();
+                ctx.arc(this.x, this.y, this.radius, 0, Math.PI * 2);
+                ctx.fillStyle = this.color;
+                ctx.fill();
+                // เพิ่มเงาเล็กน้อยให้ดูมีมิติ
+                ctx.strokeStyle = 'rgba(0,0,0,0.1)';
+                ctx.stroke();
+            }
+        }
+
+        function resolveCollision(p1, p2) {
+            const dx = p2.x - p1.x;
+            const dy = p2.y - p1.y;
+            const distance = Math.sqrt(dx * dx + dy * dy);
+            const minDistance = p1.radius + p2.radius;
+
+            if (distance < minDistance) {
+                // แก้ไขการทับซ้อน (Static resolution)
+                const overlap = minDistance - distance;
+                const nx = dx / distance;
+                const ny = dy / distance;
+                
+                const moveX = nx * overlap * 0.5;
+                const moveY = ny * overlap * 0.5;
+
+                p1.x -= moveX;
+                p1.y -= moveY;
+                p2.x += moveX;
+                p2.y += moveY;
+
+                // ผลักกัน (Dynamic resolution)
+                const relativeVelocityX = p1.vx - p2.vx;
+                const relativeVelocityY = p1.vy - p2.vy;
+                const velocityAlongNormal = relativeVelocityX * nx + relativeVelocityY * ny;
+
+                if (velocityAlongNormal > 0) return;
+
+                const restitution = BOUNCE;
+                let j = -(1 + restitution) * velocityAlongNormal;
+                j /= (1 / p1.mass + 1 / p2.mass);
+
+                const impulseX = j * nx;
+                const impulseY = j * ny;
+
+                p1.vx -= impulseX / p1.mass;
+                p1.vy -= impulseY / p1.mass;
+                p2.vx += impulseX / p2.mass;
+                p2.vy += impulseY / p2.mass;
+            }
+        }
+
+        function init() {
+            resize();
+            animate();
+        }
+
+        function resize() {
+            width = window.innerWidth;
+            height = window.innerHeight;
+            canvas.width = width;
+            canvas.height = height;
+        }
+
+        function animate() {
+            ctx.clearRect(0, 0, width, height);
+
+            if (isPouring) {
+                for(let i=0; i<2; i++) { // เททีละ 2 เม็ดต่อเฟรม
+                    const color = COLORS[Math.floor(Math.random() * COLORS.length)];
+                    particles.push(new Particle(mouseX + (Math.random()*20-10), mouseY, color));
+                }
+            }
+
+            // ตรวจสอบการชนกัน (Optimize เบื้องต้นโดยใช้ Grid หรือการวนลูป)
+            // เพื่อประสิทธิภาพสูงสุดในหน้าเว็บ จะเช็คเฉพาะเม็ดที่อยู่ใกล้กัน
+            for (let i = 0; i < particles.length; i++) {
+                for (let j = i + 1; j < particles.length; j++) {
+                    // เช็คระยะห่างคร่าวๆ ก่อนคำนวณรากที่สอง
+                    if (Math.abs(particles[i].x - particles[j].x) < 20 && 
+                        Math.abs(particles[i].y - particles[j].y) < 20) {
+                        resolveCollision(particles[i], particles[j]);
+                    }
+                }
+            }
+
+            particles.forEach(p => {
+                p.update();
+                p.draw();
+            });
+
+            countDisplay.innerText = particles.length;
+            requestAnimationFrame(animate);
+        }
+
+        // Events
+        window.addEventListener('resize', resize);
+        
+        const startPouring = (e) => {
+            isPouring = true;
+            updateMousePos(e);
+        };
+
+        const stopPouring = () => {
+            isPouring = false;
+        };
+
+        const updateMousePos = (e) => {
+            const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+            const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+            mouseX = clientX;
+            mouseY = clientY;
+        };
+
+        canvas.addEventListener('mousedown', startPouring);
+        canvas.addEventListener('mousemove', updateMousePos);
+        window.addEventListener('mouseup', stopPouring);
+
+        canvas.addEventListener('touchstart', (e) => {
+            e.preventDefault();
+            startPouring(e);
+        });
+        canvas.addEventListener('touchmove', (e) => {
+            e.preventDefault();
+            updateMousePos(e);
+        });
+        window.addEventListener('touchend', stopPouring);
+
+        clearBtn.addEventListener('click', () => {
+            particles = [];
+        });
+
+        window.onload = init;
+    </script>
+</body>
+</html>
